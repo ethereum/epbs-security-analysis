@@ -173,6 +173,8 @@ Before presenting the fork-choice algorithms, we define how each actor in the pr
 
 **A note on what "honest behavior" means in practice.** The code below specifies **event-driven behavior**: each `@Upon` decorator declares the condition under which a piece of code executes. In practice, a validator runs **client software** (such as Lighthouse, Prysm, Teku, Lodestar, or Nimbus) that has a scheduler watching the clock and network events. When a condition is met — the clock reaches a specific point in the slot, or a message arrives on the gossip network — the client internally performs the corresponding steps. A validator is honest if its client follows these steps; a validator is dishonest (Byzantine) if its client deviates — for example, by signaling `data.index = 1` without having seen the payload, withholding an attestation, or signing two conflicting blocks.
 
+**A note on `# (Ax)` markers.** Inline comments of the form `# (A1)`, `# (A2)`, … `# (A6)` tag specific lines of the handlers below where a *behavioral assumption* about honest actors fires. The assumptions are stated by the companion overview document and discharged by Lemmas H1–H7 in §12.3. In brief: A1 = honest builder bid-reveal consistency (Lemma H3); A2 = same-slot attesters signal `data.index = 0` (Lemma H1); A3 = non-same-slot attesters signal FULL/EMPTY consistently (Lemma H2); A4 = honest PTC members report observation, not validity (Lemma H4); A5 = honest builder withholds when block is not local head (Lemma H5); A6 = honest builder reveals cautiously (Lemma H7 — non-normative strengthening). The markers are forward references to §12.3.
+
 There are three roles a validator can play under ePBS: **attester**, **proposer**, and **PTC member**. A validator may hold multiple roles in the same slot (e.g., an attester who is also a PTC member). In addition, **builders** are a separate class of staked participants who are not validators.
 
 #### Honest Attester Behavior
@@ -187,9 +189,9 @@ def attest(validator, slot, state, store):
     data.source = state.current_justified_checkpoint
     data.target = Checkpoint(epoch=current_epoch, root=get_block_root(state, current_epoch))
     if head.slot == slot:                                          # Same-slot attestation
-        data.index = 0                                             # No payload opinion possible
+        data.index = 0                                             # (A2) signal zero — no payload opinion possible
     else:                                                          # Non-same-slot attestation
-        data.index = 1 if head.payload_status == FULL else 0
+        data.index = 1 if head.payload_status == FULL else 0       # (A3) signal FULL/EMPTY consistently
     broadcast(sign_attestation(validator, data))
 ```
 
@@ -276,10 +278,10 @@ def ptc_vote(validator, slot, state, store):
     data.beacon_block_root = block_root
     data.slot = slot
     if has_execution_payload_envelope(store, block_root):
-        data.payload_present = True                                # Builder revealed the payload
+        data.payload_present = True                                # (A4) report observation — builder revealed
     else:
-        data.payload_present = False                               # Builder did not reveal
-    data.blob_data_available = check_blob_data(store, block_root)  # spec: is_data_available
+        data.payload_present = False                               # (A4) report observation — builder did not reveal
+    data.blob_data_available = check_blob_data(store, block_root)  # (A4) spec: is_data_available
     msg = PayloadAttestationMessage(
         validator_index=validator.index,
         data=data,
@@ -336,7 +338,7 @@ def submit_bid(builder, upcoming_slot, state, execution_engine, proposer_prefere
     )
     signature = get_execution_payload_bid_signature(state, bid, builder.privkey)
     broadcast(SignedExecutionPayloadBid(bid, signature))
-    builder.stored_payload = payload                               # Keep for Phase 2
+    builder.stored_payload = payload                               # (A1) saved for reveal — same object used in reveal_payload
     builder.stored_requests = payload.execution_requests
 ```
 
@@ -347,12 +349,17 @@ def reveal_payload(builder, block, store, execution_engine):
     if bid.builder_index != builder.index:
         return                                                     # Not our bid
     if not is_head_of_chain(block, store):
-        return                                                     # Honest withholding
+        return                                                     # (A5) honest withholding when block is not local head
+    # (A6) Non-normative cautious-reveal precondition (formalised as Lemma H7):
+    #      wait until ≥ PROPOSER_SCORE_BOOST = 40% real attestation weight has
+    #      been observed for block.root AND no proposer equivocation by
+    #      block.proposer_index for block.slot. The spec only mandates A5; A6
+    #      is the strengthening the proofs in this document rely on.
     block_root = hash_tree_root(block)
     state = store.block_states[block_root]
     # Construct the envelope
     envelope = ExecutionPayloadEnvelope(
-        payload=builder.stored_payload,                            # Same payload used to compute bid
+        payload=builder.stored_payload,                            # (A1) same payload object as in submit_bid
         execution_requests=builder.stored_requests,
         builder_index=builder.index,
         beacon_block_root=block_root,
