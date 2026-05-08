@@ -175,6 +175,8 @@ The builder, observing the proposer's preferences, constructs an execution paylo
 
 > **A note on `@Upon`.** The code blocks that describe actor behavior (the builder's `submit_bid` and `reveal_payload`, the proposer's `propose`, the attester's `attest`, and the PTC member's `ptc_vote`) are written as **event-driven handlers**: each `@Upon` decorator declares the condition under which the code executes. In practice, a validator or builder runs client software that has a scheduler watching the clock and network events. When a condition is met — the clock reaches a specific point in the slot, or a message arrives on the gossip network — the client internally performs the corresponding steps. An actor is **honest** if its client follows these steps; an actor is **dishonest (Byzantine)** if its client deviates — for example, a validator signaling `data.index = 1` without having seen the payload, a builder revealing a different payload than the one it committed to, or a PTC member voting without observing the envelope. Functions without `@Upon` (such as `process_block` and `get_head` shown later) are **spec functions**: they are not triggered directly by events, but called internally by the client whenever it receives a block, needs to compute the chain head, or otherwise processes protocol state.
 
+> **A note on `# (Ax)` markers.** Inline comments of the form `# (A1)`, `# (A2)`, … `# (A6)` tag specific lines of the handlers below where a *behavioral assumption* about honest actors fires. The assumptions themselves are defined formally in [Section 8 (Behavioral assumptions)](#behavioral-assumptions) — in brief: A1 = honest builder bid-reveal consistency; A2 = same-slot attesters signal `data.index = 0`; A3 = non-same-slot attesters signal FULL/EMPTY consistently; A4 = honest PTC members report observation, not validity; A5 = honest builder withholds when block is not local head; A6 = honest builder reveals cautiously (≥ 40% real attestation weight, no proposer equivocation — non-normative). The markers are forward references; you can read §4 without flipping to §8 and the prose still makes sense.
+
 ```python
 @Upon(received SignedProposerPreferences for upcoming_slot)
 def submit_bid(builder, upcoming_slot, state, proposer_preferences):
@@ -193,7 +195,7 @@ def submit_bid(builder, upcoming_slot, state, proposer_preferences):
         ...,
     )
     broadcast(SignedExecutionPayloadBid(bid, sign(bid)))
-    builder.stored_payload = payload                        # Keep for reveal phase
+    builder.stored_payload = payload                        # (A1) saved for reveal — same object used in reveal_payload
 ```
 
 **The builder constructs the full payload before submitting the bid, because `bid.block_hash` must equal the actual payload's hash.** This is a binding commitment: when the builder later reveals, the revealed payload must match this hash exactly. The other key field is `bid.parent_block_hash`, which declares which execution chain tip the builder built on — this is how the next block signals whether it treats its parent as FULL or EMPTY (explained fully in Section 6, "The two-chain structure").
@@ -332,9 +334,9 @@ def attest(validator, slot, state, store):
     head = get_head(store)
     data = AttestationData(slot=slot, beacon_block_root=head.root, ...)
     if head.slot == slot:                       # Same-slot attestation
-        data.index = 0                          # No payload opinion possible
+        data.index = 0                          # (A2) signal zero — no payload opinion possible
     else:                                       # Non-same-slot attestation
-        data.index = 1 if head.payload_status == FULL else 0
+        data.index = 1 if head.payload_status == FULL else 0  # (A3) signal FULL/EMPTY consistently
     broadcast(sign_attestation(validator, data))
 ```
 
@@ -372,9 +374,11 @@ Some time after the beacon block is published — typically before the PTC deadl
 @Upon(received SignedBeaconBlock containing this bid)
 def reveal_payload(builder, block, store):
     if not is_head_of_chain(block, store):
-        return                                              # Honest withholding
+        return                                              # (A5) honest withholding when block is not local head
+    # (A6) Non-normative cautious-reveal precondition — see callout below:
+    #      wait until ≥ 40% real attestation weight AND no proposer equivocation.
     envelope = ExecutionPayloadEnvelope(
-        payload=builder.stored_payload,                     # Same payload as the bid commits to
+        payload=builder.stored_payload,                     # (A1) same payload object as in submit_bid
         execution_requests=builder.stored_requests,
         builder_index=builder.index,
         beacon_block_root=hash_tree_root(block),
@@ -417,44 +421,7 @@ The builder's **payment** is not settled at this point. It is settled later, whe
 
 *Figure 7: Phase 4 (t = 75%), PTC witness-vote deadline. Each of the 512 PTC members runs `Check payload arrival` and broadcasts a vote carrying two independent signals — `payload_present` and `blob_data_available` (decision tree on the right). The vote is a binary observation, not a validity judgment (behavioral assumption A4 / Lemma H4); the tiebreaker `should_extend_payload` requires majority on **both** signals.*
 
-Before zooming into the spec handler, it is useful to look at what a single PTC member does as an *entity* over the entire slot. The spec does not define this view — it splits the behaviour into independent event handlers (`on_block`, `on_execution_payload_envelope`, `ptc_vote`), each fired by its own trigger. The lifecycle below stitches them together in slot order, so the role of the Phase 4 vote becomes visible as the last step of a three-step duty:
-
-```python
-# Informal: everything an honest PTC member does over one slot.
-# Not a spec function — a sequential view of the three handlers that
-# fire on independent triggers (block arrival, envelope arrival, deadline).
-
-def ptc_member_for_slot(validator, slot, state, store):
-    if validator.index not in get_ptc(state, slot):
-        return                                              # not assigned to PTC this slot
-
-    # ── Phase 1b ── beacon block arrives over gossip
-    block = await_gossip(beacon_block_for(slot), deadline=T_PTC)
-    if block is None:
-        return                                              # no block → no vote
-    on_block(store, block)                                  # same handler every node runs
-
-    # ── Phase 3 ── envelope observed passively on gossip
-    # No directed transmission from the builder: the PTC picks the envelope
-    # off the same broadcast that reaches the Attesters' CL.
-    envelope = await_gossip(envelope_for(block.root), deadline=T_PTC)
-    if envelope is not None:
-        on_execution_payload_envelope(store, envelope)
-
-    # ── Phase 4 ── at the deadline, broadcast the witness vote
-    wait_until(T_PTC)
-    ptc_vote(validator, slot, state, store)                 # spec handler, below
-```
-
-Three observations follow directly from this lifecycle:
-
-- **No block, no vote.** If no beacon block arrives by `T_PTC`, the member returns silently — *absence of a block is not a vote with `payload_present = False`; it is no vote at all*.
-- **Envelope handling is best-effort.** A late or missing envelope simply leaves `store.payloads` unpopulated, which is what `has_execution_payload_envelope` reads at vote time.
-- **Only the final step requires precise timing** (`wait_until(T_PTC)`). The first two are reactive.
-
-**The lifecycle encodes the vote-at-deadline strategy; vote-on-receipt is equally spec-compliant.** The lifecycle waits until $T_{\mathrm{ptc}}$ and only then evaluates the store. Figures 2 and 6a depict the alternative — vote-on-receipt — where the witness vote is broadcast the moment the envelope is observed. Both strategies satisfy the spec contract that the broadcast happens by `get_payload_attestation_due_ms()`; they differ only in how soon a `payload_present = True` vote is committed once the evidence exists. The proofs in Section 8 and the formal treatment do not depend on the choice between the two.
-
-The vote itself — the last line of the lifecycle — corresponds to the spec handler in [`validator.md`](https://github.com/ethereum/consensus-specs/blob/master/specs/gloas/validator.md) ("Constructing a payload attestation message"). The four lookup helpers below — `has_beacon_block_for_slot`, `get_beacon_block_root_for_slot`, `has_execution_payload_envelope`, `check_blob_data` — are pedagogical names for the corresponding inline checks in the spec prose (the spec uses `is_data_available` for the blob-data check; the others are described in prose at the same `validator.md` section):
+An honest PTC member's slot-level duty consists of three handlers that fire on independent triggers: `on_block` (when the beacon block arrives), `on_execution_payload_envelope` (when the envelope arrives, if it does), and `ptc_vote` (at $T_{\mathrm{ptc}}$). The first two are common to all nodes — every node processes blocks and envelopes the same way. The third is PTC-specific. Below we focus on `ptc_vote`. The handler corresponds to the spec handler in [`validator.md`](https://github.com/ethereum/consensus-specs/blob/master/specs/gloas/validator.md) ("Constructing a payload attestation message"). The four lookup helpers — `has_beacon_block_for_slot`, `get_beacon_block_root_for_slot`, `has_execution_payload_envelope`, `check_blob_data` — are pedagogical names for the corresponding inline checks in the spec prose (the spec uses `is_data_available` for the blob-data check; the others are described in prose rather than as named helpers):
 
 ```python
 @Upon(time_in_slot == T_PTC and validator.index in get_ptc(state, slot))
@@ -467,13 +434,19 @@ def ptc_vote(validator, slot, state, store):
         data=PayloadAttestationData(
             beacon_block_root=block_root,
             slot=slot,
-            payload_present=has_execution_payload_envelope(store, block_root),
-            blob_data_available=check_blob_data(store, block_root),  # spec: is_data_available
+            payload_present=has_execution_payload_envelope(store, block_root),  # (A4) report observation
+            blob_data_available=check_blob_data(store, block_root),             # (A4) spec: is_data_available
         ),
         signature=sign(...),
     )
     broadcast(msg)
 ```
+
+Three observations about this handler:
+
+- **No block, no vote.** If no beacon block has arrived by $T_{\mathrm{ptc}}$, the early return fires — *absence of a block is not a vote with `payload_present = False`; it is no vote at all*.
+- **Envelope handling is best-effort.** A late or missing envelope simply leaves `store.payloads` unpopulated, which is exactly what `has_execution_payload_envelope` reads here.
+- **Vote-at-deadline vs vote-on-receipt are both spec-compliant.** The `@Upon(time_in_slot == T_PTC ...)` form above models vote-at-deadline (the member waits and evaluates the store at $T_{\mathrm{ptc}}$). Figures 2 and 6a depict the alternative — vote-on-receipt — where the witness vote is broadcast the moment the envelope is observed. Both satisfy the spec contract that the broadcast happens by `get_payload_attestation_due_ms()`; they differ only in how soon a `payload_present = True` vote is committed once the evidence exists. The proofs in Section 8 and the formal treatment do not depend on the choice between the two.
 
 **The PTC vote contains two independent signals, because the builder delivers two things:**
 
@@ -739,82 +712,11 @@ The assumptions fall into two categories:
 
 The following assumptions are grounded in the `@Upon` handlers shown in Sections 4–5. Each one names a specific behavior of an honest actor that is visible in (or directly implied by) the code already presented.
 
-**Three entities are referenced:** honest **builder** (A1, A5, A6), honest **attester** (A2, A3), and honest **PTC member** (A4). The PTC member's slot-level lifecycle is given in Section 4, Phase 4 (`ptc_member_for_slot`). The builder and attester lifecycles below stitch the spec's per-event handlers (`submit_bid` / `reveal_payload`; `attest`) into slot order, so the role of each A-assumption is visible at the line that produces it:
-
-```python
-# What a single honest builder does over one slot, end to end.
-# The spec splits this into `submit_bid` (Phase 0) and `reveal_payload`
-# (Phase 3); the lifecycle below is the entity-level view, in slot order.
-
-def honest_builder_for_slot(builder, slot, store):
-    # ── Phase 0 ── observe preferences, construct payload, submit bid
-    prefs = await_gossip(preferences_for(slot))
-    builder.stored_payload = construct_payload(prefs)         # (A1) saved for reveal
-    bid = SignedExecutionPayloadBid(
-        block_hash        = hash_tree_root(builder.stored_payload),
-        value             = chosen_value,
-        parent_block_hash = parent_block_hash,
-        ...
-    )
-    broadcast(sign(bid, builder))
-
-    # ── Phase 1b ── beacon block arrives; check if our bid was selected
-    block = await_gossip(beacon_block_for(slot), deadline=T_PTC)
-    if block is None or block.bid.builder_index != builder.index:
-        return                                                # bid not selected — nothing to do
-    on_block(store, block)                                    # same handler every node runs
-
-    # ── Phase 3 ── decide whether to reveal the envelope
-    # (A5) Spec rule: withhold if the block is not the local fork-choice head.
-    if not is_head_of_chain(block, store):
-        return
-    # (A6) Strengthening used in proofs (non-normative; see Phase 3 cautious-
-    #      reveal guidance): wait for ≥ PROPOSER_SCORE_BOOST (≈40%) of
-    #      committee weight in real attestations supporting the block AND
-    #      absence of proposer equivocation, before broadcasting.
-    wait_until(
-        real_attestation_weight(block, store) >= 0.40 * committee_weight(slot)
-        and not proposer_equivocated(block.proposer_index, block.slot, store)
-    )
-    envelope = SignedExecutionPayloadEnvelope(
-        payload           = builder.stored_payload,           # (A1) identical object
-        beacon_block_root = block.root,
-        ...
-    )
-    broadcast(sign(envelope, builder))
-```
-
-```python
-# What a single honest attester does over one slot, end to end.
-# The spec defines this as the `attest` handler that fires at T_att;
-# the lifecycle below makes the upstream block reception explicit.
-
-def honest_attester_for_slot(validator, slot, state, store):
-    # ── Phase 1b ── beacon block arrives (if any) and is processed
-    block = await_gossip(beacon_block_for(slot), deadline=T_ATT)
-    if block is not None:
-        on_block(store, block)                                # same handler every node runs
-
-    # ── Phase 2 ── at T_att, identify the head and cast the attestation
-    wait_until(T_ATT)
-    head = get_head(store)
-    data = AttestationData(
-        slot              = slot,
-        beacon_block_root = head.root,
-        source = ..., target = ...,
-    )
-    if head.slot == slot:
-        data.index = 0                                        # (A2) same-slot: signal zero
-    else:
-        data.index = 1 if head.payload_status == FULL else 0  # (A3) non-same-slot: FULL/EMPTY
-    broadcast(sign(Attestation(data=data, ...), validator))
-```
-
-Each A-assumption below promotes a specific line of these lifecycles (or of `ptc_member_for_slot` in Section 4) to a citable fact, with the *Grounding* pointer naming the spec function and line that the lifecycle line corresponds to.
+**Three entities are referenced:** honest **builder** (A1, A5, A6), honest **attester** (A2, A3), and honest **PTC member** (A4). Each A-assumption below pins a specific line of the corresponding `@Upon` handler in §4 — `submit_bid` and `reveal_payload` (Phases 0 and 3), `attest` (Phase 2), `ptc_vote` (Phase 4) — with inline `# (Ax)` markers visible on each line. The *Grounding* pointer in each assumption names the handler and line it corresponds to.
 
 **(A1) Honest builder bid-reveal consistency.** An honest builder stores the payload at bid time (`builder.stored_payload = payload` in `submit_bid`, Phase 0) and reveals the same object in `reveal_payload` (Phase 3). Therefore, an honest builder's revealed payload has `block_hash == bid.block_hash`.
 
-*Grounding:* Phase 0, `submit_bid` line 17 (`builder.stored_payload = payload`) and Phase 3, `reveal_payload` line 5 (`payload=builder.stored_payload`). The same Python object is used in both phases, so the hash is identical.
+*Grounding:* Phase 0, `submit_bid` (`builder.stored_payload = payload`, marked `# (A1)`) and Phase 3, `reveal_payload` (`payload=builder.stored_payload`, marked `# (A1)`). The same Python object is used in both phases, so the hash is identical.
 
 **(A2) Honest same-slot attesters signal zero.** An honest attester whose fork-choice head is a block from the attester's own slot sets `data.index = 0`.
 
