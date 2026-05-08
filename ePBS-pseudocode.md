@@ -1,6 +1,6 @@
 # ePBS: Formal Pseudocode and Algorithms
 
-This document contains the formal definitions, algorithms, and helper functions for ePBS (EIP-7732). It is the formal layer of a two-part treatment: the [overview](https://github.com/ethereum/epbs-security-analysis/blob/main/README.md) (on the `main` branch of this repository) provides a self-contained middle-layer document with abstracted code and figures; this document provides the full formal model with proofs.
+This document contains the formal definitions, algorithms, and helper functions for ePBS (EIP-7732). It is the formal layer of a two-part treatment: the [overview](https://github.com/ethereum/epbs-security-analysis/blob/master/README.md) (on the `master` branch of this repository) provides a self-contained middle-layer document with abstracted code and figures; this document provides the full formal model with proofs.
 
 **Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`5aa6eec`](https://github.com/ethereum/consensus-specs/commit/5aa6eec), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/master/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
 
@@ -402,7 +402,7 @@ The following table summarizes the complete timeline of actions within a single 
 
 The following diagram shows the same timeline as the table above, with the complete message flow between actors:
 
-![Slot lifecycle](https://raw.githubusercontent.com/ethereum/epbs-security-analysis/main/figures/fig2-spec-update-v28.png)
+![Slot lifecycle](https://raw.githubusercontent.com/ethereum/epbs-security-analysis/master/figures/fig2-spec-update-v28.png)
 
 *The slot lifecycle under ePBS. Each column represents an actor, color-coded: Proposer (orange), Builder (violet), Attesters with Consensus Client and Execution Client (green/blue/teal), and PTC Members (red). PTC Members are a separate column linked to Attesters by a "subsampled from" arrow, since they are selected from the slot's attestation committees. The Builder is a separate staked participant, not a validator. Lifelines are solid when the actor is active and dotted when idle. The key structural feature is the separation between block publication (Phase 1, Proposer to all participants) and payload delivery (Phase 3, Builder to all participants): the beacon block contains only the builder's bid, and the actual execution payload arrives separately.*
 
@@ -674,7 +674,7 @@ This section establishes the formal properties of the ePBS fork-choice rule, org
 
 #### Property table
 
-The [overview document](https://github.com/ethereum/epbs-security-analysis/blob/main/README.md) (Section 3) restricts its property list to seven externally observable claims — those an observer with full visibility of network messages and on-chain state can verify, without inspecting any node's internal state. The following table maps each of those seven properties to the formal lemmas proved in this section:
+The [overview document](https://github.com/ethereum/epbs-security-analysis/blob/master/README.md) (Section 3) restricts its property list to seven externally observable claims — those an observer with full visibility of network messages and on-chain state can verify, without inspecting any node's internal state. The following table maps each of those seven properties to the formal lemmas proved in this section:
 
 | Property                                  | Statement                                                      | Proved by                                                                                        |
 | ----------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
@@ -697,7 +697,7 @@ Four claims that appeared in earlier drafts of the overview as "properties" are 
 
 #### Discharging the overview's assumptions
 
-The [overview document](https://github.com/ethereum/epbs-security-analysis/blob/main/README.md) (Section 8) states explicit assumptions — behavioral (A-prefix) and algorithmic (G-prefix) — that its proof sketches depend on. This document provides the code and proofs that discharge every assumption. The following table shows the correspondence.
+The [overview document](https://github.com/ethereum/epbs-security-analysis/blob/master/README.md) (Section 8) states explicit assumptions — behavioral (A-prefix) and algorithmic (G-prefix) — that its proof sketches depend on. This document provides the code and proofs that discharge every assumption. The following table shows the correspondence.
 
 **Behavioral assumptions** are discharged by proving the claimed behavior from the `@Upon` handler code in Section 12.2:
 
@@ -792,7 +792,7 @@ The spec (`builder.md`) does not strictly mandate this strategy — it only says
 1. **Real-attestation observation:** the builder polls its local store for attestations supporting `block.root` and waits until the cumulative real attestation weight (Definition: real attestation = validator-cast vote, excluding the synthetic proposer-boost vote) reaches `PROPOSER_SCORE_BOOST = 40%` of a slot committee's effective balance.
 2. **Equivocation-evidence absence:** the builder polls its local store for any `SignedBeaconBlockHeader` pair that would constitute a `ProposerSlashing` against `block.proposer_index` at `block.slot`, and proceeds only if none is present.
 
-If either check fails before $T_{\mathrm{ptc}}$, the builder withholds (early-return path). The `reveal_payload` pseudocode in Section 12.2 captures the spec's minimal rule (`is_head_of_chain`) at lines 5–6; the two H7 checks are layered on top of that and constitute the strategy's defining content. The "proof" of H7 is therefore the **commitment** to this cautious strategy by an honest builder operating under this document's stronger behavioural model — there is no spec function to quote, because the spec only mandates the H5-level rule. Compare A6 in the [overview](https://github.com/ethereum/epbs-security-analysis/blob/main/README.md) (§8), where this is stated explicitly as a non-normative strengthening. ∎
+If either check fails before $T_{\mathrm{ptc}}$, the builder withholds (early-return path). The `reveal_payload` pseudocode in Section 12.2 captures the spec's minimal rule (`is_head_of_chain`) at lines 5–6; the two H7 checks are layered on top of that and constitute the strategy's defining content. The "proof" of H7 is therefore the **commitment** to this cautious strategy by an honest builder operating under this document's stronger behavioural model — there is no spec function to quote, because the spec only mandates the H5-level rule. Compare A6 in the [overview](https://github.com/ethereum/epbs-security-analysis/blob/master/README.md) (§8), where this is stated explicitly as a non-normative strengthening. ∎
 
 *Remark on dischargeability.* H7 cannot be discharged from the spec alone; it can only be discharged by (i) augmenting `builder.md` with the cautious-reveal rule, or (ii) showing empirically that production builder implementations adopt it. Either route would convert H7 from a behavioural assumption into a derivable lemma. Under the current spec, every Lemma in §12.3–§12.5 that cites H7 is conditional on builders adopting the cautious strategy; without it, those lemmas degrade to the weaker H5-only conclusions noted in the surrounding remarks.
 
