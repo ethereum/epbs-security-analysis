@@ -1,3 +1,5 @@
+![draft](https://img.shields.io/badge/status-🚧_draft-orange?style=for-the-badge)
+
 # ePBS: Overview, Lifecycle, and Properties
 
 EIP-7732 enshrines proposer-builder separation into Ethereum's consensus protocol. This is a large change: it restructures how blocks are produced, introduces a new staked actor (the builder), splits the fork-choice tree into a three-state model, and creates an unconditional payment mechanism that removes the need for trusted relays.
