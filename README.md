@@ -1,4 +1,4 @@
-![draft](https://img.shields.io/badge/status-🚧_draft-orange?style=for-the-badge)
+![draft](https://img.shields.io/badge/status-🚧_WIP-orange?style=for-the-badge)
 
 # ePBS: Overview, Lifecycle, and Properties
 
