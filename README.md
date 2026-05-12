@@ -143,9 +143,7 @@ This is the foundation of Property P5 (Data availability for chain inclusion) be
 
 ## 4. Properties
 
-> **TL;DR.** Five properties P1–P5 capture the externally observable guarantees of ePBS — claims an observer with full visibility of network messages and on-chain state can verify, without inspecting any node's internal state. P1–P2 govern payment; P3–P4 protect the builder; P5 ties chain inclusion to data availability. All five hold under β < 20% per committee.
-
-With the actors and the two-chain structure established, we can state the properties ePBS is designed to guarantee. We restrict the list to **claims observable from network messages and on-chain state alone**: an external observer running a passive node should be able to detect a violation. Internal mechanisms — two-phase block processing, the ePBS modifications to the fork-choice rule, how `is_supporting_vote` weighs same-slot votes — underwrite the properties but are not themselves on the list. They are treated as *descriptions* in §5–§6; the fork-choice modifications in particular are unpacked in §5 Phase 5.
+> **TL;DR.** Five properties P1–P5 capture the externally observable guarantees of ePBS — claims an observer with full visibility of network messages and on-chain state can verify, without inspecting any node's internal state. P1–P2 govern payment; P3–P4 protect the builder; P5 ties chain inclusion to data availability. All five hold under β < 20% per committee
 
 Each property is stated here informally and revisited precisely as we walk through the lifecycle. Each is backed by lemmas in the companion formal treatment.
 
@@ -1015,6 +1013,7 @@ In both cases the proposer receives a `BuilderPendingWithdrawal`.
 *Proof:* Two parts — timing and single payment.
 
 *Part 1 (timing).* Two cases by reveal/withhold.
+
 - *Builder reveals (honest cautious-reveal path):* By **A6** and honest proposer at slot N+1, the slot is declared FULL on chain. The slot-N+1 block's `process_parent_execution_payload` → `apply_parent_execution_payload` → `settle_builder_payment` chain queues the payment — by direct inspection of the `settle_builder_payment` code in §6. Payment queued within one slot of the bid.
 - *Builder withholds:* If honesty assumptions hold and the bid was selected, the beacon block reaches the 60% quorum among honest attesters in the cautious-reveal window; by **G-PayAttest**, `payment.weight` accumulates. By **G-PayEpoch**, the entry is examined at the end of epoch *e+1* (one epoch after the bid's own epoch ends, by the ring-buffer layout of §6) and queued. End-to-end ≤ two epochs.
 
@@ -1066,13 +1065,13 @@ By **G-PayEpoch**, `process_builder_pending_payments` queues the entry only if `
 
 The following table shows which assumptions each property depends on:
 
-| Property | Behavioural (A) | Algorithmic (G)                                       |
-| -------- | --------------- | ----------------------------------------------------- |
-| P1       | A6              | G-PayAttest, G-PayEpoch                               |
-| P2       | A6              | G-PayAttest, G-PayEpoch, G-Solvency                   |
-| P3       | A6              | G-Weight (weight-arithmetic instance)                 |
-| P4       | A6              | G-PayAttest, G-PayEpoch                               |
-| P5       | A4              | G-Struct                                              |
+| Property | Behavioural (A) | Algorithmic (G)                       |
+| -------- | --------------- | ------------------------------------- |
+| P1       | A6              | G-PayAttest, G-PayEpoch               |
+| P2       | A6              | G-PayAttest, G-PayEpoch, G-Solvency   |
+| P3       | A6              | G-Weight (weight-arithmetic instance) |
+| P4       | A6              | G-PayAttest, G-PayEpoch               |
+| P5       | A4              | G-Struct                              |
 
 All five properties depend on at least one algorithmic assumption about internal spec functions, and four of the five rest on the cautious-reveal behavioural assumption A6 (the strengthened honest-builder strategy formalised as Assumption H7 in the formal treatment). The companion [formal treatment](https://github.com/ethereum/epbs-security-analysis/blob/formal-treatment/ePBS-pseudocode.md) (on the `formal-treatment` branch) provides the full implementations of the cited spec functions and proves every A- and G-assumption as a lemma (A1→H3, A2→H1, A3→H2, A4→H4, A5→H5, A6→H7).
 
