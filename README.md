@@ -103,7 +103,7 @@ ePBS introduces one new actor and modifies the role of existing ones.
 
 The two pointers reference different parents whenever a payload was withheld in between.
 
-![Two-chain structure](figures/fig-two-chains-v4.png)
+![Two-chain structure](figures/fig-two-chains-v5.png)
 
 *Figure 1: The two-pointer structure when slot 99's builder withholds. Each beacon block draws two arrows — an **orange** arrow to its consensus parent (`parent_root`) and a **teal** arrow to its execution parent (`bid.parent_block_hash`). Block 99's execution arrow points to Payload 98, the most recent revealed payload when slot 99 begins. Slot 99's builder then withholds, so when slot 100 begins, Payload 98 is *still* the most recent revealed payload — and Block 100's execution arrow also lands on Payload 98, skipping slot 99 on the execution chain entirely.*
 
