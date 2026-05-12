@@ -2,7 +2,7 @@
 
 This document contains the formal definitions, algorithms, and helper functions for ePBS (EIP-7732). It is the formal layer of a two-part treatment: the [overview](https://github.com/ethereum/epbs-security-analysis/blob/master/README.md) (on the `master` branch of this repository) provides a self-contained middle-layer document with abstracted code and figures; this document provides the full formal model with proofs.
 
-**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`5aa6eec`](https://github.com/ethereum/consensus-specs/commit/5aa6eec), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/master/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
+**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`792a8b0`](https://github.com/ethereum/consensus-specs/commit/792a8b0), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/master/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
 
 ## 12. Fork Choice: Model, Definitions, and Algorithms
 
@@ -12,12 +12,12 @@ This section formalizes the ePBS fork-choice rule. Ethereum's existing fork-choi
 
 **Definition 1** (Slot structure). Time is divided into *slots* of fixed duration `SLOT_DURATION` (12 seconds). Each slot N is partitioned into four phases:
 
-| Phase                    | Time              | Deadline constant                                   | Actor       | Action                                                                                         |
-| ------------------------ | ----------------- | --------------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------------- |
-| **Proposal**       | t = 0             | —                                                  | Proposer    | Broadcasts beacon block containing the builder's bid                                           |
-| **Attestation**    | t = T_att         | `ATTESTATION_DUE_BPS_GLOAS = 2500` (25%, deadline) | Attesters   | Broadcast attestations for the beacon block                                                    |
-| **Builder reveal** | t ∈ (0, T_ptc)   | —                                                  | Builder     | Broadcasts `SignedExecutionPayloadEnvelope`                                                  |
-| **PTC vote**       | t ∈ (0, T_ptc]   | `PAYLOAD_ATTESTATION_DUE_BPS = 7500` (75%, deadline) | PTC members | Broadcast payload timeliness votes within the first 75% of the slot (deadline, not exact firing) |
+| Phase                    | Time            | Deadline constant                                      | Actor       | Action                                                                                           |
+| ------------------------ | --------------- | ------------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------ |
+| **Proposal**       | t = 0           | —                                                     | Proposer    | Broadcasts beacon block containing the builder's bid                                             |
+| **Attestation**    | t = T_att       | `ATTESTATION_DUE_BPS_GLOAS = 2500` (25%, deadline)   | Attesters   | Broadcast attestations for the beacon block                                                      |
+| **Builder reveal** | t ∈ (0, T_ptc) | —                                                     | Builder     | Broadcasts `SignedExecutionPayloadEnvelope`                                                    |
+| **PTC vote**       | t ∈ (0, T_ptc] | `PAYLOAD_ATTESTATION_DUE_BPS = 7500` (75%, deadline) | PTC members | Broadcast payload timeliness votes within the first 75% of the slot (deadline, not exact firing) |
 
 With `SLOT_DURATION = 12s`: T_att = 3s, T_ptc = 9s. The ordering T_att < T_ptc is a fundamental design constraint: attesters vote before the builder is expected to reveal, and PTC members vote after the builder has had time to reveal. This ordering implies that same-slot attesters cannot observe the payload status at the time they vote.
 
@@ -69,21 +69,22 @@ A vote is a *non-same-slot vote* for block B if `slot > slot(B)`. This occurs wh
 
 *Spec reference: `LatestMessage` and `update_latest_messages` in `fork-choice.md`; attestation `data.index` rules in `validator.md`.*
 
-**Definition 8** (Store). The *store* is the local fork-choice state maintained by each node. It contains:
+**Definition 8** (Store). The *store* is the local fork-choice state maintained by each node. We use the spec field names verbatim:
 
 - `blocks[r]`: the block B_r, for each known block root r.
 - `block_states[r]`: the post-state of block B_r after `process_block` (which now includes parent execution effects via `process_parent_execution_payload`). Present for every known block.
-- `store.payloads[r]`: the `ExecutionPayloadEnvelope` for block B_r, stored after `verify_execution_payload_envelope` succeeds. Present only if the payload envelope was received and verified.
-- `votes[i]`: the latest vote (Definition 7) of validator i.
-- `equivocating`: the set of validator indices that have been observed equivocating (double-voting). Their votes are excluded from weight computation.
+- `payloads[r]`: the `ExecutionPayloadEnvelope` for block B_r, stored after `verify_execution_payload_envelope` succeeds. Present only if the payload envelope was received and verified.
+- `latest_messages[i]`: the latest vote (Definition 7) of validator i, stored as a `LatestMessage(slot, root, payload_present)` record.
+- `equivocating_indices`: the set of validator indices that have been observed equivocating (double-voting). Their votes are excluded from weight computation.
 - `payload_timeliness_vote[r]`: array of PTC_SIZE entries (each `None` initially, then `True`/`False`) recording each PTC member's `payload_present` vote for block with root r.
 - `payload_data_availability_vote[r]`: same structure for `blob_data_available` votes.
 - `justified_checkpoint`: the current justified checkpoint `(epoch, root)`. The fork-choice traversal starts from this root.
 - `checkpoint_states[C]`: the beacon state at checkpoint C. Used as the balance source for weight computation.
 - `proposer_boost_root`: the root of the block receiving proposer boost in the current slot (or the zero root if none).
-- `current_slot`: the current slot, derived from the store's wall-clock time. Referenced by the zero-return rule (Definition 12) and the tiebreaker (Definition 13).
 
-*Spec reference: `Store` in `fork-choice.md` — `block_states`, `payloads`, `latest_messages`, `payload_timeliness_vote`, `payload_data_availability_vote`, `proposer_boost_root`, `block_timeliness`.*
+The current slot is derived from the store's wall-clock time via the spec helper `get_current_slot(store)`; we write it inline (rather than as a store field) wherever it appears in the algorithms below.
+
+*Spec reference: `Store` in `fork-choice.md` — `block_states`, `payloads`, `latest_messages`, `equivocating_indices`, `payload_timeliness_vote`, `payload_data_availability_vote`, `proposer_boost_root`, `block_timeliness`; `get_current_slot` in `phase0/fork-choice.md`.*
 
 **Definition 9** (Ancestor). For a root r and a slot t with `t ≤ slot(B_r)`, the *ancestor of r at slot t*, written `anc(r, t)`, is the fork-choice node identifying which block at slot t is in B_r's chain and what its payload status is:
 
@@ -134,6 +135,7 @@ Blob data is *available* under the analogous condition on `payload_data_availabi
 *Regime A — block is not the immediately previous slot's block (`s = PENDING` or `slot(B_r) + 1 ≠ current_slot`).* The tiebreaker is the natural payload-status integer (Definition 2): EMPTY=0, FULL=1, PENDING=2. There is no ambiguity to resolve here — `get_weight` already produces non-zero scores via Definition 12, and the tiebreaker only matters under exact weight ties.
 
 *Regime B — block is the immediately previous slot's block (`s ∈ {FULL, EMPTY}` and `slot(B_r) + 1 = current_slot`).* `get_weight` returns 0 for both `(r, FULL)` and `(r, EMPTY)` under the zero-return rule (Definition 12), so the tiebreaker is the *sole* arbiter:
+
 - If `s = EMPTY`: the tiebreaker value is 1.
 - If `s = FULL`: the tiebreaker value is 2 if `should_extend_payload(r)`, else 0.
 
@@ -175,29 +177,58 @@ Before presenting the fork-choice algorithms, we define how each actor in the pr
 
 **A note on `# (Ax)` markers.** Inline comments of the form `# (A1)`, `# (A2)`, … `# (A6)` tag specific lines of the handlers below where a *behavioral assumption* about honest actors fires. The assumptions are stated by the companion overview document and discharged by Lemmas H1–H7 in §12.3. In brief: A1 = honest builder bid-reveal consistency (Lemma H3); A2 = same-slot attesters signal `data.index = 0` (Lemma H1); A3 = non-same-slot attesters signal FULL/EMPTY consistently (Lemma H2); A4 = honest PTC members report observation, not validity (Lemma H4); A5 = honest builder withholds when block is not local head (Lemma H5); A6 = honest builder reveals cautiously (Lemma H7 — non-normative strengthening). The markers are forward references to §12.3.
 
+**Pedagogical abstractions.** The handlers below use a small set of helper names that do not appear in the Gloas specs as named functions. Each one abstracts spec prose or a generic operation, for readability. The mapping is:
+
+| Pedagogical name | Spec source |
+| --- | --- |
+| `collect_valid_bids(state, slot)` | "Listen to the `execution_payload_bid` gossip global topic and save an accepted `signed_execution_payload_bid` from a builder. The block proposer MAY obtain these signed messages by other off-protocol means." (`validator.md`, §"Signed execution payload bid") |
+| `select_one_bid(bids)` | "Select one bid …" (`validator.md`, §"Signed execution payload bid") |
+| `aggregate_ptc_votes(slot - 1)` | "The proposer MUST aggregate all payload attestations with the same data into a given `PayloadAttestation` object." (`validator.md`, §"Payload attestations") |
+| `construct_beacon_block(state, body)`, `construct_beacon_block_body(state, slot, **kwargs)` | `construct_beacon_block` is standard `BeaconBlock` container construction (`slot`, `proposer_index`, `parent_root`, `state_root`, `body`), where `state_root` is filled in after a pre-signature `state_transition` with `validate_result=False`. `construct_beacon_block_body` populates the unchanged-from-pre-ePBS body fields (`randao_reveal`, `eth1_data`, `graffiti`, slashings, `attestations`, `deposits`, `voluntary_exits`, `sync_aggregate`, `bls_to_execution_changes`) per `phase0/validator.md` and accepts the ePBS-new fields (`signed_execution_payload_bid`, `payload_attestations`, `parent_execution_requests`) as keyword overrides. |
+| `broadcast_data_column_sidecars(envelope, builder)` | `get_data_column_sidecars(beacon_block_root, slot, cells_and_kzg_proofs)` from `builder.md` plus per-sidecar publication to the `data_column_sidecar_{subnet_id}` gossip subnets (`p2p-interface.md`). |
+| `is_head_of_chain(block, store)` | Shorthand for `get_head(store).root == hash_tree_root(block)` — the "head of the builder's chain" check from `builder.md` §"Honest payload withheld messages". |
+| `is_attester_for_slot(state, validator_index, slot)` | Shorthand for "the validator is assigned to one of the slot's attestation committees", determined via `get_committee_assignment(state, compute_epoch_at_slot(slot), validator_index)` (`phase0/validator.md`). |
+| `has_beacon_block_for_slot(store, slot)`, `get_beacon_block_root_for_slot(store, slot)` | Inline prose checks in `validator.md` §"Constructing the `PayloadAttestationMessage`" ("If the validator has not seen any beacon block for the assigned slot, do not submit a payload attestation"). |
+| `has_execution_payload_envelope(store, root)` | Inline prose check in `validator.md` §"Constructing the `PayloadAttestationMessage`" ("If a previously seen `SignedExecutionPayloadEnvelope` references the block …"); equivalent to `is_payload_verified(store, root)` in `fork-choice.md`. |
+| `check_blob_data(store, root)` | Spec function `is_data_available(beacon_block_root)` from `fork-choice.md`; we keep `store` in the signature so reads are visible at the call site. |
+| `EXECUTION_ENGINE.build_payload(...)`, `EXECUTION_ENGINE.get_payload(payload_id)` | The execution-engine JSON-RPC method `engine_getPayloadV6` invoked after `notify_forkchoice_updated` (`builder.md` step 3; `fork-choice.md` §`notify_forkchoice_updated`). We collapse the two-step flow to a single conceptual call returning a `(payload, execution_requests, blob_kzg_commitments)` bundle. |
+| `sign(x)`, `broadcast(x)` | Standard BLS signing (via `compute_signing_root` + `bls.Sign` with the appropriate `DOMAIN_*`) and gossip publication. The spec uses domain-specific named signers (`get_attestation_signature`, `get_proposer_preferences_signature`, `get_payload_attestation_message_signature`, `get_block_signature`); we use `sign(x)` as a uniform shorthand for these and `broadcast(x)` for the gossip layer. |
+| `get_safe_execution_block_hash(store)` | Implementation-defined helper invoked by `prepare_execution_payload` (`fork-choice.md` §`notify_forkchoice_updated`). |
+| `(r, status)` tuple form | Pedagogical shorthand for `ForkChoiceNode(root=r, payload_status=status)` (`fork-choice.md` line 104). The algorithms below alternate between the tuple form and the spec container form for compactness. |
+| `FULL`, `EMPTY`, `PENDING` | Shorthand for the spec constants `PAYLOAD_STATUS_FULL`, `PAYLOAD_STATUS_EMPTY`, `PAYLOAD_STATUS_PENDING` (`fork-choice.md` lines 74–76). |
+| `slot(B)`, `parent(B)`, `state(B)`, `root(B)` | Math notation: "the slot of B", "the parent block of B", "the post-state of B", "the hash tree root of B" — correspond to `B.slot`, `store.blocks[B.parent_root]`, `store.block_states[hash_tree_root(B)]`, and `hash_tree_root(B)` respectively. |
+| `time_in_slot`, `T_ATT`, `T_PTC` | Client-scheduler variables abstracted from the spec deadlines `ATTESTATION_DUE_BPS_GLOAS` and `PAYLOAD_ATTESTATION_DUE_BPS` (`validator.md`); `time_in_slot` is the wall-clock offset within the current slot. |
+| `@Upon(condition)` decorator | Framing convention for event-driven handlers, with the informal English event syntax inside the parentheses (e.g., "received SignedBeaconBlock for current slot"). The spec describes these triggers in prose; we use `@Upon` for compactness. |
+| `validator` runtime object | A client-side process-state record (distinct from the spec `Validator` container). Fields used: `validator.index` (the validator's assigned index in `state.validators`), `validator.fee_recipient` (execution-layer payment address), `validator.gas_limit` (preferred gas), `validator.wants_external_builder` (local preference flag toggled per slot). |
+| `builder` runtime object | A client-side process-state record (distinct from the spec `Builder` container). Fields used: `builder.index` (the assigned builder index), `builder.bid_amount` (Gwei amount the builder will offer this slot), `builder.privkey` (the builder's BLS private key), `builder.stored_payload`, `builder.stored_requests` (the payload + execution-requests bundle stashed at bid time and re-used at reveal time per Lemma H3). |
+
+The @Upon handler names themselves (`attest`, `propose`, `submit_bid`, `reveal_payload`, `ptc_vote`, `broadcast_preferences`) are this document's framing for the honest behaviour described in `validator.md` and `builder.md`; they are not spec function names.
+
 There are three roles a validator can play under ePBS: **attester**, **proposer**, and **PTC member**. A validator may hold multiple roles in the same slot (e.g., an attester who is also a PTC member). In addition, **builders** are a separate class of staked participants who are not validators.
 
 #### Honest Attester Behavior
 
 ```python
-@Upon(time_in_slot == T_ATT and validator in get_beacon_committee(state, slot))
+@Upon(time_in_slot == T_ATT and is_attester_for_slot(state, validator.index, slot))
 def attest(validator, slot, state, store):
     head = get_head(store)
+    head_block = store.blocks[head.root]
+    current_epoch = get_current_epoch(state)
     data = AttestationData()
     data.slot = slot
     data.beacon_block_root = head.root
     data.source = state.current_justified_checkpoint
     data.target = Checkpoint(epoch=current_epoch, root=get_block_root(state, current_epoch))
-    if head.slot == slot:                                          # Same-slot attestation
+    if head_block.slot == slot:                                    # Same-slot attestation
         data.index = 0                                             # (A2) signal zero — no payload opinion possible
     else:                                                          # Non-same-slot attestation
         data.index = 1 if head.payload_status == FULL else 0       # (A3) signal FULL/EMPTY consistently
-    broadcast(sign_attestation(validator, data))
+    broadcast(sign(data))
 ```
 
 The `@Upon` guard fires at T_att (25% of the slot, i.e., 3 seconds) for every validator assigned to the slot's committee. The attester runs the fork-choice function to determine the chain head, then constructs an `AttestationData` with the standard fields (slot, head root, source and target checkpoints). The ePBS-specific behavior is entirely in how `data.index` is set (lines 9–12).
 
-**Lines 9–10: Same-slot attestation.** If the head block is from the attester's own slot (`head.slot == slot`), the attester always sets `data.index = 0`. This is because the attestation deadline is at 25% of the slot (T_att = 3s, Definition 1), while the builder has until 75% (T_ptc = 9s) to reveal the payload. At the time the attester votes, they cannot know whether the payload will arrive, so they express no opinion. This is the behavior that Lemma 2 relies on: same-slot attesters are payload-neutral because they are *required* to set `data.index = 0`.
+**Lines 9–10: Same-slot attestation.** If the head block is from the attester's own slot (`head_block.slot == slot`, where `head_block = store.blocks[head.root]`), the attester always sets `data.index = 0`. This is because the attestation deadline is at 25% of the slot (T_att = 3s, Definition 1), while the builder has until 75% (T_ptc = 9s) to reveal the payload. At the time the attester votes, they cannot know whether the payload will arrive, so they express no opinion. This is the behavior that Lemma 2 relies on: same-slot attesters are payload-neutral because they are *required* to set `data.index = 0`.
 
 **Lines 11–12: Non-same-slot attestation.** If the head block is from a previous slot (the attester's slot had no block proposed, so their head fell back to an older block), the attester can observe whether that block's payload was delivered. They read the payload status from the fork-choice result: if `get_head` returned a FULL node, set `data.index = 1`; if EMPTY, set `data.index = 0`. This is the behavior that Lemma 8 relies on: non-same-slot attesters provide the attestation weight that resolves FULL vs. EMPTY when the immediately next slot is missed.
 
@@ -208,13 +239,22 @@ The `@Upon` guard fires at T_att (25% of the slot, i.e., 3 seconds) for every va
 ```python
 @Upon(time_in_slot == 0 and is_proposer(state, validator.index))
 def propose(validator, slot, state, store):
+    parent_root = hash_tree_root(state.latest_block_header)
     # Select a bid (external builder or self-build)
     bids = collect_valid_bids(state, slot)                         # From gossip + off-protocol
     if bids and validator.wants_external_builder:
         selected_bid = select_one_bid(bids)                        # Spec does not prescribe selection
     else:                                                          # Self-build path
-        payload_id = prepare_execution_payload(state, validator.fee_recipient, execution_engine)
-        payload = execution_engine.get_payload(payload_id)
+        # Derive execution-engine head pointers per fork-choice.md
+        finalized_block = store.blocks[store.finalized_checkpoint.root]
+        finalized_block_bid = finalized_block.body.signed_execution_payload_bid.message
+        finalized_block_hash = finalized_block_bid.parent_block_hash
+        safe_block_hash = get_safe_execution_block_hash(store)
+        payload_id = prepare_execution_payload(
+            store, state, safe_block_hash, finalized_block_hash,
+            validator.fee_recipient, EXECUTION_ENGINE,
+        )
+        payload, execution_requests, blob_kzg_commitments = EXECUTION_ENGINE.get_payload(payload_id)
         bid = ExecutionPayloadBid(
             builder_index=BUILDER_INDEX_SELF_BUILD,
             value=0, execution_payment=0, slot=slot,
@@ -224,20 +264,27 @@ def propose(validator, slot, state, store):
             prev_randao=get_randao_mix(state, get_current_epoch(state)),
             fee_recipient=validator.fee_recipient,
             gas_limit=payload.gas_limit,
-            blob_kzg_commitments=payload.blob_kzg_commitments,
+            blob_kzg_commitments=blob_kzg_commitments,
+            execution_requests_root=hash_tree_root(execution_requests),
         )
-        selected_bid = SignedExecutionPayloadBid(bid, G2_POINT_AT_INFINITY)
-    # Construct and broadcast the beacon block
-    body = BeaconBlockBody()
-    body.signed_execution_payload_bid = selected_bid
-    body.payload_attestations = aggregate_ptc_votes(slot - 1)      # PTC votes from previous slot
-    # Include parent's execution requests if building on FULL parent
-    if should_extend_payload(store, parent_root):
-        body.parent_execution_requests = store.payloads[parent_root].execution_requests
-    else:
-        body.parent_execution_requests = ExecutionRequests()
+        selected_bid = SignedExecutionPayloadBid(bid, bls.G2_POINT_AT_INFINITY)
+    # Construct and broadcast the beacon block. construct_beacon_block populates
+    # the unchanged-from-pre-ePBS body fields (randao_reveal, eth1_data, graffiti,
+    # slashings, attestations, deposits, voluntary_exits, sync_aggregate,
+    # bls_to_execution_changes) per phase0/validator.md.
+    body = construct_beacon_block_body(state, slot,
+        signed_execution_payload_bid=selected_bid,
+        payload_attestations=aggregate_ptc_votes(slot - 1),         # PTC votes from previous slot
+        parent_execution_requests=(
+            store.payloads[parent_root].execution_requests
+            if should_extend_payload(store, parent_root)
+            else ExecutionRequests()
+        ),
+    )
     block = construct_beacon_block(state, body)
-    state_transition(state, block, validate_result=False)           # Compute state root
+    # Pre-signature state-root computation uses a temp SignedBeaconBlock with empty signature
+    state_transition(state, SignedBeaconBlock(message=block, signature=BLSSignature()),
+                     validate_result=False)
     broadcast(SignedBeaconBlock(block, sign(block)))
 ```
 
@@ -245,6 +292,7 @@ def propose(validator, slot, state, store):
 @Upon(slot in get_upcoming_proposal_slots(state, validator.index))  # Before the slot (optional)
 def broadcast_preferences(validator, slot, state):
     preferences = ProposerPreferences(
+        dependent_root=get_proposer_dependent_root(state, compute_epoch_at_slot(slot)),
         proposal_slot=slot,
         validator_index=validator.index,
         fee_recipient=validator.fee_recipient,                     # Destination address, not a price
@@ -260,7 +308,7 @@ The `propose` handler fires at the beginning of the slot (t = 0). There are two 
 - **External builder** (lines 5–6): The proposer selects one bid from those collected. Bid selection is not prescribed by the spec — it simply says "select one bid." A rational proposer would choose the highest `bid.value`.
 - **Self-build** (lines 7–22): If the proposer does not want to use an external builder (or no bids are available), it sets `builder_index = BUILDER_INDEX_SELF_BUILD` with `value = 0` (the proposer does not pay itself) and signature = `G2_POINT_AT_INFINITY` (the BLS identity element, a sentinel meaning "no real signer"). The proposer constructs the execution payload itself via `prepare_execution_payload` (line 8), which internally calls `apply_parent_execution_payload` on a copy of the state when building on FULL — the same local simulation that external builders perform (see the note in the builder's `submit_bid` description).
 
-After selecting a bid, the proposer constructs the beacon block (lines 23–29). Line 26 is important: PTC votes from slot N-1 are included in the slot N block, making them part of the permanent on-chain record. The proposer runs `state_transition` with `validate=False` to compute the state root, then broadcasts the signed block.
+After selecting a bid, the proposer constructs the beacon block body via `construct_beacon_block_body` (which populates the unchanged-from-pre-ePBS fields like `randao_reveal`, `eth1_data`, etc., and accepts the three ePBS-new fields as overrides). PTC votes from slot N-1 are included in the slot N block via `payload_attestations`, making them part of the permanent on-chain record. The proposer runs `state_transition` with `validate_result=False` over a temporary `SignedBeaconBlock` (with an empty signature placeholder) to compute the state root, then signs and broadcasts the real `SignedBeaconBlock`.
 
 *Spec reference: proposer duties in `validator.md`.*
 
@@ -314,8 +362,10 @@ def submit_bid(builder, upcoming_slot, state, execution_engine, proposer_prefere
     # Read the current chain state
     parent_block_hash = state.latest_block_hash                    # Execution chain tip
     parent_block_root = hash_tree_root(state.latest_block_header)  # Consensus chain tip
-    # Construct the execution payload via the execution engine
-    payload = execution_engine.build_payload(
+    # Construct the execution payload via the execution engine. The bundle
+    # returned by engine_getPayloadV6 contains the payload plus the execution
+    # requests and blob KZG commitments as siblings (see builder.md steps 3, 12, 13).
+    payload, execution_requests, blob_kzg_commitments = execution_engine.build_payload(
         parent_hash=parent_block_hash,
         timestamp=compute_time_at_slot(state, upcoming_slot),
         prev_randao=get_randao_mix(state, get_current_epoch(state)),
@@ -334,12 +384,13 @@ def submit_bid(builder, upcoming_slot, state, execution_engine, proposer_prefere
         slot=upcoming_slot,
         value=builder.bid_amount,                                  # Amount offered to proposer (Gwei)
         execution_payment=0,                                       # Must be 0 for gossip bids
-        blob_kzg_commitments=payload.blob_kzg_commitments,
+        blob_kzg_commitments=blob_kzg_commitments,
+        execution_requests_root=hash_tree_root(execution_requests),
     )
     signature = get_execution_payload_bid_signature(state, bid, builder.privkey)
     broadcast(SignedExecutionPayloadBid(bid, signature))
     builder.stored_payload = payload                               # (A1) saved for reveal — same object used in reveal_payload
-    builder.stored_requests = payload.execution_requests
+    builder.stored_requests = execution_requests
 ```
 
 ```python
@@ -392,18 +443,18 @@ A subtlety in lines 3–4: the builder reads `state.latest_block_hash` to determ
 
 The following table summarizes the complete timeline of actions within a single slot, combining all three validator roles and the builder:
 
-| Time             | Actor         | Trigger                            | Action                                                                                             |
-| ---------------- | ------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------- |
-| Before slot      | Proposer      | `@Upon(upcoming proposal slot)`  | Broadcasts `SignedProposerPreferences` (optional)                                                |
-| Before slot      | Builder       | `@Upon(received preferences)`    | Constructs payload, broadcasts `SignedExecutionPayloadBid`                                       |
-| t = 0 (0%)       | Proposer      | `@Upon(time_in_slot == 0)`       | Broadcasts `SignedBeaconBlock` with builder's bid and prev-slot PTC votes                        |
-| t = 0+           | All nodes     | `@Upon(received block)`          | Run `on_block` (Algorithm 7): process beacon block, initialize PTC scorecards                    |
-| t = T_att (25%)  | Attesters     | `@Upon(time_in_slot == T_ATT)`   | Broadcast attestations with `data.index` payload signal                                          |
-| t ∈ (0, T_ptc)  | Builder       | `@Upon(received block with bid)` | Broadcasts `SignedExecutionPayloadEnvelope` once cautious-reveal conditions are met (Lemma H7)   |
-| t ∈ (0, T_ptc)  | All nodes     | `@Upon(received envelope)`       | Run `on_execution_payload_envelope` (Algorithm 8): validate payload, populate `store.payloads` |
-| t ∈ (0, T_ptc] (deadline at 75%) | PTC members | `@Upon(within T_PTC, before deadline)` | Broadcast `PayloadAttestationMessage` (witness statement). Spec deadline is t ≤ T_PTC; cautious members wait close to T_PTC. |
-| t = T_ptc+       | All nodes     | `@Upon(received PTC vote)`       | Run `on_payload_attestation_message` (Algorithm 9): update PTC scorecard                         |
-| Next slot, t = 0 | Next proposer | `@Upon(time_in_slot == 0)`       | Includes aggregated PTC votes in next block; runs `get_head`                                     |
+| Time                              | Actor         | Trigger                                  | Action                                                                                                                          |
+| --------------------------------- | ------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Before slot                       | Proposer      | `@Upon(upcoming proposal slot)`        | Broadcasts `SignedProposerPreferences` (optional)                                                                             |
+| Before slot                       | Builder       | `@Upon(received preferences)`          | Constructs payload, broadcasts `SignedExecutionPayloadBid`                                                                    |
+| t = 0 (0%)                        | Proposer      | `@Upon(time_in_slot == 0)`             | Broadcasts `SignedBeaconBlock` with builder's bid and prev-slot PTC votes                                                     |
+| t = 0+                            | All nodes     | `@Upon(received block)`                | Run `on_block` (Algorithm 7): process beacon block, initialize PTC scorecards                                                 |
+| t = T_att (25%)                   | Attesters     | `@Upon(time_in_slot == T_ATT)`         | Broadcast attestations with `data.index` payload signal                                                                       |
+| t ∈ (0, T_ptc)                   | Builder       | `@Upon(received block with bid)`       | Broadcasts `SignedExecutionPayloadEnvelope` once cautious-reveal conditions are met (Lemma H7)                                |
+| t ∈ (0, T_ptc)                   | All nodes     | `@Upon(received envelope)`             | Run `on_execution_payload_envelope` (Algorithm 8): validate payload, populate `store.payloads`                              |
+| t ∈ (0, T_ptc] (deadline at 75%) | PTC members   | `@Upon(within T_PTC, before deadline)` | Broadcast `PayloadAttestationMessage` (witness statement). Spec deadline is t ≤ T_PTC; cautious members wait close to T_PTC. |
+| t = T_ptc+                        | All nodes     | `@Upon(received PTC vote)`             | Run `on_payload_attestation_message` (Algorithm 9): update PTC scorecard                                                      |
+| Next slot, t = 0                  | Next proposer | `@Upon(time_in_slot == 0)`             | Includes aggregated PTC votes in next block; runs `get_head`                                                                  |
 
 *Spec reference: timing constants `ATTESTATION_DUE_BPS_GLOAS = 2500`, `PAYLOAD_ATTESTATION_DUE_BPS = 7500` in `validator.md`.*
 
@@ -421,10 +472,10 @@ The following algorithms operate on a store (Definition 8) and a set of known bl
 
 ```python
 def get_head(store):
-    tree = get_filtered_block_tree(store)
+    blocks = get_filtered_block_tree(store)                        # Dict[Root, BeaconBlock]
     head = (store.justified_checkpoint.root, PENDING)
     while True:
-        children = get_node_children(store, tree, head)            # Definition 6
+        children = get_node_children(store, blocks, head)          # Definition 6
         if not children:
             return head
         head = max(children, key=lambda c: (                       # Definitions 12, 13
@@ -439,7 +490,7 @@ This is the main fork-choice function: given the current store, it returns the n
 #### Algorithm 2: get_node_children
 
 ```python
-def get_node_children(store, tree, node):
+def get_node_children(store, blocks, node):
     r, s = node
     if s == PENDING:
         children = [(r, EMPTY)]                                    # EMPTY always exists
@@ -448,9 +499,10 @@ def get_node_children(store, tree, node):
         return children
     else:                                                          # s in {FULL, EMPTY}
         return [                                                   # Definition 4
-            (block.root, PENDING)
-            for block in tree
-            if block.parent_root == r and get_parent_payload_status(store, block) == s
+            (child_root, PENDING)
+            for child_root in blocks.keys()
+            if blocks[child_root].parent_root == r
+               and get_parent_payload_status(store, blocks[child_root]) == s
         ]
 ```
 
@@ -472,7 +524,7 @@ def get_ancestor(store, root, target_slot):
     while parent.slot > target_slot:                               # Walk back toward target slot
         block = parent
         parent = store.blocks[block.parent_root]
-    return (parent.root, get_parent_payload_status(store, block))   # Read block's declaration about parent
+    return (block.parent_root, get_parent_payload_status(store, block))  # Read block's declaration about parent
 ```
 
 This function answers the question: "in the chain of a given block, what happened at a given target slot — which block was there, and was it FULL or EMPTY?" In one sentence: **what did the first block after the target slot declare about the target?** More precisely: the function finds the first block in the chain whose slot is strictly after the target, and reads what that block declared about the block at the target slot. The answer comes from the chain structure itself — from the permanent `parentStatus` declarations that each block makes about its parent — not from any BeaconState, PTC vote, or attestation.
@@ -523,18 +575,23 @@ This function answers the question: "does vote m count toward the weight of fork
 ```python
 def get_weight(store, node):
     r, s = node
-    if s != PENDING and store.blocks[r].slot + 1 == store.current_slot:
+    if s != PENDING and store.blocks[r].slot + 1 == get_current_slot(store):
         return 0                                                   # Tiebreaker decides for prev slot
     state = store.checkpoint_states[store.justified_checkpoint]
     score = 0
-    for i in get_active_validator_indices(state):
-        if (i in store.votes
-                and i not in store.equivocating
-                and is_supporting_vote(store, node, store.votes[i])):
+    for i in get_active_validator_indices(state, get_current_epoch(state)):
+        if (not state.validators[i].slashed                        # Slashed validators are excluded
+                and i in store.latest_messages
+                and i not in store.equivocating_indices
+                and is_supporting_vote(store, node, store.latest_messages[i])):
             score += state.validators[i].effective_balance
     if should_apply_proposer_boost(store):                         # Proposer boost as synthetic vote
-        boost_vote = Vote(slot=store.current_slot, root=store.proposer_boost_root, payload_present=False)
-        if is_supporting_vote(store, node, boost_vote):
+        boost_message = LatestMessage(
+            slot=get_current_slot(store),
+            root=store.proposer_boost_root,
+            payload_present=False,
+        )
+        if is_supporting_vote(store, node, boost_message):
             score += get_proposer_score(store)
     return score
 ```
@@ -543,9 +600,9 @@ This function computes the total attestation weight behind a fork-choice node (r
 
 **Lines 3–4: The zero-return rule.** If the node is a FULL or EMPTY node (`s ≠ PENDING`) and the block is from the immediately previous slot (`slot + 1 = current_slot`), the function returns 0 immediately. This is because no validator can have a meaningful payload opinion yet: same-slot attesters voted before the builder revealed, and non-same-slot attesters (from the current slot) have not attested yet. The FULL vs. EMPTY decision for this slot is delegated entirely to the tiebreaker (Definition 13), which uses PTC votes instead of attestation weight.
 
-**Lines 5–11: Attestation score.** For all other nodes, the function iterates over every active, unslashed, non-equivocating validator and checks whether their latest vote supports this node (via `is_supporting_vote`, Algorithm 4). If it does, their effective balance is added to the score. Two important points: (1) the scan covers ALL validators' latest votes, not just the committee of this block's slot — a vote for block Y at slot 99 contributes weight to every ancestor node Y passes through, via Case 2 of `is_supporting_vote`; (2) the effective balances come from the checkpoint state (line 4), not the block's own state.
+**Lines 5–12: Attestation score.** For all other nodes, the function iterates over every active, unslashed, non-equivocating validator and checks whether their latest vote supports this node (via `is_supporting_vote`, Algorithm 4). If it does, their effective balance is added to the score. Two important points: (1) the scan covers ALL validators' latest votes, not just the committee of this block's slot — a vote for block Y at slot 99 contributes weight to every ancestor node Y passes through, via Case 2 of `is_supporting_vote`; (2) the effective balances come from the checkpoint state (line 4), not the block's own state.
 
-**Lines 12–15: Proposer boost.** If a block was received on time in the current slot, the proposer boost acts as a synthetic vote: the function constructs a fake vote `(current_slot, proposer_boost_root, False)` and checks whether it supports this node via `is_supporting_vote`, just like a real vote. If it does, a fixed boost score is added. The `payload_present = False` in the synthetic vote means the boost supports PENDING and EMPTY but never FULL — this is intentional because the boost is applied before the builder reveals.
+**Lines 13–20: Proposer boost.** If a block was received on time in the current slot, the proposer boost acts as a synthetic vote: the function constructs a fake vote `(current_slot, proposer_boost_root, False)` and checks whether it supports this node via `is_supporting_vote`, just like a real vote. If it does, a fixed boost score is added. The `payload_present = False` in the synthetic vote means the boost supports PENDING and EMPTY but never FULL — this is intentional because the boost is applied before the builder reveals.
 
 *Spec reference: `get_weight`, `get_attestation_score` in `fork-choice.md`.*
 
@@ -590,10 +647,13 @@ def on_block(store, signed_block):
         assert is_payload_verified(store, block.parent_root)
     assert get_current_slot(store) >= block.slot                    # Block cannot be from the future
     assert block.slot > compute_start_slot_at_epoch(store.finalized_checkpoint.epoch)
-    assert is_descendant(block, store.finalized_checkpoint)
+    finalized_checkpoint_block = get_checkpoint_block(
+        store, block.parent_root, store.finalized_checkpoint.epoch,
+    )
+    assert store.finalized_checkpoint.root == finalized_checkpoint_block
     state = copy(store.block_states[block.parent_root])             # Always use block_states
     root = hash_tree_root(block)
-    state_transition(state, signed_block, validate=True)            # Includes process_parent_execution_payload
+    state_transition(state, signed_block, validate_result=True)     # Includes process_parent_execution_payload
     store.blocks[root] = block
     store.block_states[root] = state
     store.payload_timeliness_vote[root] = [None] * PTC_SIZE          # Initialize PTC scorecard
@@ -601,7 +661,8 @@ def on_block(store, signed_block):
     notify_ptc_messages(store, state, block.body.payload_attestations)
     record_block_timeliness(store, root)
     update_proposer_boost_root(store, root)
-    update_checkpoints(store, state)
+    update_checkpoints(store, state.current_justified_checkpoint, state.finalized_checkpoint)
+    compute_pulled_up_tip(store, root)                              # Eager unrealized justification/finality
 ```
 
 This function is called when a new beacon block arrives over the network. It processes the block at the consensus layer and updates the store. Execution payload verification happens separately in Algorithm 8 (`on_execution_payload_envelope`), but the *parent's* execution effects are now applied inside `process_block` (via `process_parent_execution_payload` — see Helper 11) during this call.
@@ -616,7 +677,7 @@ This function is called when a new beacon block arrives over the network. It pro
 
 **Lines 12–15:** Stores the block and its post-state in the store. Lines 14–15 initialize empty PTC vote arrays (`payload_timeliness_vote`, `payload_data_availability_vote`) for this block — these arrays will be filled later as PTC members broadcast their votes (Algorithm 9) or as the next block includes aggregated PTC attestations (line 16).
 
-**Lines 16–19:** Processes included PTC attestations from the previous slot (`notify_ptc_messages`), records block timeliness, applies proposer boost, and updates checkpoints.
+**Lines 16–20:** Processes included PTC attestations from the previous slot (`notify_ptc_messages`), records block timeliness, applies proposer boost, updates checkpoints, and eagerly computes the pulled-up unrealized justification/finality for the new block.
 
 *Spec reference: `on_block` in `fork-choice.md`.*
 
@@ -656,22 +717,32 @@ def on_payload_attestation_message(store, msg, is_from_block):
     if msg.data.slot != state.slot:
         return                                                     # Vote must match block's slot
     ptc = get_ptc(state, msg.data.slot)
-    assert msg.validator_index in ptc
+    # The same validator can occupy multiple PTC positions because
+    # compute_balance_weighted_selection samples with replacement (Helper 30).
+    ptc_indices = [i for i, v_idx in enumerate(ptc) if v_idx == msg.validator_index]
+    assert len(ptc_indices) > 0
     if not is_from_block:
-        assert msg.data.slot == store.current_slot                 # Gossip: current slot only
-        assert is_valid_signature(msg)
-    idx = ptc.index(msg.validator_index)
-    store.payload_timeliness_vote[root][idx] = msg.data.payload_present
-    store.payload_data_availability_vote[root][idx] = msg.data.blob_data_available
+        assert msg.data.slot == get_current_slot(store)            # Gossip: current slot only
+        assert is_valid_indexed_payload_attestation(
+            state,
+            IndexedPayloadAttestation(
+                attesting_indices=[msg.validator_index],
+                data=msg.data,
+                signature=msg.signature,
+            ),
+        )
+    for idx in ptc_indices:                                        # Write vote into every position the validator holds
+        store.payload_timeliness_vote[root][idx] = msg.data.payload_present
+        store.payload_data_availability_vote[root][idx] = msg.data.blob_data_available
 ```
 
 This function is called when a PTC member's vote arrives (constructed as described in Section 12.2, PTC Member Behavior), either from the gossip network (during the current slot) or from a block that included aggregated PTC attestations from the previous slot. PTC votes do not carry attestation weight — they do not appear in `get_weight` (Algorithm 5). Instead, they populate the PTC scorecard (`payload_timeliness_vote`, `payload_data_availability_vote`) that feeds into `is_payload_timely` (Definition 11), which feeds into `should_extend_payload` (Algorithm 6), which feeds into the tiebreaker (Definition 13). The chain of influence is: PTC vote → scorecard → timeliness check → tiebreaker → FULL vs. EMPTY decision for the immediately previous slot.
 
-**Lines 2–8: Validation.** The vote must reference a known block (line 3), the vote's slot must match the block's slot (line 5), and the voter must be a member of the PTC for that slot (line 8).
+**Lines 2–11: Validation.** The vote must reference a known block (line 3), the vote's slot must match the block's slot (line 5), and the voter must occupy at least one PTC position for that slot (lines 7–11). Because `compute_balance_weighted_selection` (Helper 30) samples with replacement, a single validator can hold multiple PTC slots; we collect every position the voter holds into `ptc_indices`.
 
-**Lines 9–11: Source distinction.** Votes arrive from two sources: gossip (broadcast by PTC members during the slot) and block inclusion (aggregated by the next proposer). Gossip-received votes (line 9: `is_from_block = False`) are subject to additional checks: the vote must be for the current slot (line 10) — stale PTC votes are rejected — and the signature must be valid (line 11). Block-included votes skip these checks because block processing already validated them.
+**Lines 12–18: Source distinction.** Votes arrive from two sources: gossip (broadcast by PTC members during the slot) and block inclusion (aggregated by the next proposer). Gossip-received votes (`is_from_block = False`) are subject to additional checks: the vote must be for the current slot — stale PTC votes are rejected — and the signature must be valid via `is_valid_indexed_payload_attestation`. Block-included votes skip these checks because block processing already validated them.
 
-**Lines 12–14: Scorecard update.** The voter's position in the PTC is determined (line 12), and their `payload_present` and `blob_data_available` signals are recorded in the scorecard arrays (lines 13–14). Once enough entries are True (more than `PTC_SIZE / 2`), `is_payload_timely` returns True and the tiebreaker favors FULL.
+**Lines 19–21: Scorecard update.** The voter's `payload_present` and `blob_data_available` signals are written into *every* PTC position the voter holds. Once enough entries are True (more than `PTC_SIZE / 2`), `is_payload_timely` returns True and the tiebreaker favors FULL.
 
 *Spec reference: `on_payload_attestation_message` in `fork-choice.md`.*
 
@@ -683,24 +754,24 @@ This section establishes the formal properties of the ePBS fork-choice rule, org
 
 The [overview document](https://github.com/ethereum/epbs-security-analysis/blob/master/README.md) (Section 3) restricts its property list to seven externally observable claims — those an observer with full visibility of network messages and on-chain state can verify, without inspecting any node's internal state. The following table maps each of those seven properties to the formal lemmas proved in this section:
 
-| Property                                  | Statement                                                      | Proved by                                                                                        |
-| ----------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| P1: Unconditional payment                 | Proposer paid regardless of builder reveal                     | Lemma 11 (combining Lemmas 9 and 10); quorum reachability: Lemma 20; index correctness: Lemma 21 |
-| P2: PTC bounds proposer power             | PTC overrides malicious proposer EMPTY declaration             | Lemma 14 + adversarial table (Section 12.4)                                                      |
-| P3: Builder solvency at bid time          | Builder cannot overbid across concurrent slots                 | Lemma 12b (built on Helper 6 + Helper 20)                                                        |
-| P4: Bid commitments are binding           | Revealed payload must match bid hash                           | Lemma H3                                                                                         |
-| P5: Builder protection (Path B only)      | Builder not charged if it withholds and block lacks 60% quorum | Lemma 16                                                                                         |
-| P6: No double payment                     | Reveal settlement clears epoch settlement                      | Lemma 12                                                                                         |
-| P7: Missed-slot resolution                | Attestation weight resolves when next slot missed              | Lemma 8 + Lemma 28 (empty-slot state preservation, stated in §12.5)                              |
+| Property                             | Statement                                                      | Proved by                                                                                        |
+| ------------------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| P1: Unconditional payment            | Proposer paid regardless of builder reveal                     | Lemma 11 (combining Lemmas 9 and 10); quorum reachability: Lemma 20; index correctness: Lemma 21 |
+| P2: PTC bounds proposer power        | PTC overrides malicious proposer EMPTY declaration             | Lemma 14 + adversarial table (Section 12.4)                                                      |
+| P3: Builder solvency at bid time     | Builder cannot overbid across concurrent slots                 | Lemma 12b (built on Helper 6 + Helper 20)                                                        |
+| P4: Bid commitments are binding      | Revealed payload must match bid hash                           | Lemma H3                                                                                         |
+| P5: Builder protection (Path B only) | Builder not charged if it withholds and block lacks 60% quorum | Lemma 16                                                                                         |
+| P6: No double payment                | Reveal settlement clears epoch settlement                      | Lemma 12                                                                                         |
+| P7: Missed-slot resolution           | Attestation weight resolves when next slot missed              | Lemma 8 + Lemma 28 (empty-slot state preservation, stated in §12.5)                             |
 
 Four claims that appeared in earlier drafts of the overview as "properties" are *internal mechanisms*, not externally observable properties, and have been demoted to descriptions in the overview. They are still proved formally here for completeness:
 
-| Internal mechanism (no longer a property)              | Statement                                                  | Proved by                                                                                                              |
-| ------------------------------------------------------ | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Two-phase block processing                             | Consensus advances without execution payload               | Helper 11 (process_block) structure; Algorithm 7 vs Algorithm 8 separation                                             |
-| Execution validity gates FULL-node existence (per node) | FULL node exists iff payload validated                     | Lemma 1                                                                                                                |
-| Same-slot payload neutrality (weight computation)      | Same-slot attesters cannot contribute FULL/EMPTY weight     | Lemma 2 (structural) + Lemma H1 (behavioral)                                                                           |
-| PTC votes are witness statements (honest behavior)     | Honest PTC reports observation, not validity               | Lemma H4 — discharged as a behavioral assumption (A4); not externally checkable from a single PTC vote                 |
+| Internal mechanism (no longer a property)               | Statement                                               | Proved by                                                                                               |
+| ------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Two-phase block processing                              | Consensus advances without execution payload            | Helper 11 (process_block) structure; Algorithm 7 vs Algorithm 8 separation                              |
+| Execution validity gates FULL-node existence (per node) | FULL node exists iff payload validated                  | Lemma 1                                                                                                 |
+| Same-slot payload neutrality (weight computation)       | Same-slot attesters cannot contribute FULL/EMPTY weight | Lemma 2 (structural) + Lemma H1 (behavioral)                                                            |
+| PTC votes are witness statements (honest behavior)      | Honest PTC reports observation, not validity            | Lemma H4 — discharged as a behavioral assumption (A4); not externally checkable from a single PTC vote |
 
 #### Discharging the overview's assumptions
 
@@ -708,14 +779,14 @@ The [overview document](https://github.com/ethereum/epbs-security-analysis/blob/
 
 **Behavioral assumptions** are discharged by proving the claimed behavior from the `@Upon` handler code in Section 12.2:
 
-| Overview assumption                              | Discharged by                                                                                                            |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| A1 (builder bid-reveal consistency)              | Lemma H3 — the `submit_bid` handler stores the payload (line 14) and `reveal_payload` uses the same object (line 5) |
-| A2 (same-slot attesters signal zero)             | Lemma H1 — the `attest` handler's `if head.slot == slot` branch (lines 9–10)                                       |
-| A3 (non-same-slot attesters signal consistently) | Lemma H2 — the `attest` handler's `else` branch (lines 11–12)                                                      |
-| A4 (PTC reports observation, not validity)       | Lemma H4 — the `ptc_vote` handler calls `has_execution_payload_envelope` (line 9), not the execution engine         |
-| A5 (honest builder withholding is conditional)   | Lemma H5 — the `reveal_payload` handler's only early-return path (lines 5–6)                                         |
-| A6 (honest builder reveals cautiously)           | Lemma H7 — cautious-reveal strategy: ≥ 40% real attestation weight observed AND no proposer equivocation, before broadcast. Used by Lemmas 7, 9, 11, 17 to deliver concrete anti-reorg / Path-A-fires guarantees under β < 20%.|
+| Overview assumption                              | Discharged by                                                                                                                                                                                                                      |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1 (builder bid-reveal consistency)              | Lemma H3 — the `submit_bid` handler stores the payload (line 14) and `reveal_payload` uses the same object (line 5)                                                                                                           |
+| A2 (same-slot attesters signal zero)             | Lemma H1 — the `attest` handler's `if head_block.slot == slot` branch (with `head_block = store.blocks[head.root]`)                                                                                                         |
+| A3 (non-same-slot attesters signal consistently) | Lemma H2 — the `attest` handler's `else` branch (lines 11–12)                                                                                                                                                                |
+| A4 (PTC reports observation, not validity)       | Lemma H4 — the `ptc_vote` handler calls `has_execution_payload_envelope` (line 9), not the execution engine                                                                                                                   |
+| A5 (honest builder withholding is conditional)   | Lemma H5 — the `reveal_payload` handler's only early-return path (lines 5–6, counting from `def`)                                                                                                                              |
+| A6 (honest builder reveals cautiously)           | Lemma H7 — cautious-reveal strategy: ≥ 40% real attestation weight observed AND no proposer equivocation, before broadcast. Used by Lemmas 7, 9, 11, 17 to deliver concrete anti-reorg / Path-A-fires guarantees under β < 20%. |
 
 **Algorithmic assumptions** are discharged by providing the complete algorithm/helper code and proving the claimed properties:
 
@@ -736,19 +807,19 @@ The following properties follow directly from the `@Upon` handlers in Section 12
 
 ---
 
-**Lemma H1** (Same-slot attesters always signal zero). *If an honest attester's fork-choice head is a block from the attester's own slot (head.slot == slot), then the attester sets data.index = 0.*
+**Lemma H1** (Same-slot attesters always signal zero). *If an honest attester's fork-choice head is a block from the attester's own slot (i.e., `head_block.slot == slot` where `head_block = store.blocks[head.root]`), then the attester sets data.index = 0.*
 
 This property ensures that same-slot attesters never express a payload opinion, which is the behavioral basis for Lemma 2 (same-slot attesters are payload-neutral in the fork-choice weight).
 
-*Proof.* By the `attest` handler (Section 12.2, Attester), line 9 checks `if head.slot == slot`. When this condition is true, line 10 unconditionally executes `data.index = 0`. No other branch is reachable when `head.slot == slot`. ∎
+*Proof.* By the `attest` handler (Section 12.2, Attester), the branch guard checks `if head_block.slot == slot` (with `head_block = store.blocks[head.root]`). When this condition is true, the body unconditionally executes `data.index = 0`. No other branch is reachable in that arm. ∎
 
 ---
 
-**Lemma H2** (Non-same-slot attesters signal consistently with fork-choice). *If an honest attester's fork-choice head is a block from a previous slot (head.slot < slot), then the attester sets data.index = 1 if head.payload_status == FULL, and data.index = 0 otherwise.*
+**Lemma H2** (Non-same-slot attesters signal consistently with fork-choice). *If an honest attester's fork-choice head is a block from a previous slot (i.e., `head_block.slot < slot` where `head_block = store.blocks[head.root]`), then the attester sets data.index = 1 if head.payload_status == FULL, and data.index = 0 otherwise.*
 
 This property ensures that non-same-slot attesters faithfully report what their fork-choice tells them. It is the behavioral basis for Lemma 8 (attestation fallback for missed slots): honest non-same-slot attesters provide weight to the correct FULL or EMPTY branch.
 
-*Proof.* By the `attest` handler (Section 12.2, Attester), when `head.slot != slot` (the `else` branch at line 11), line 12 executes `data.index = 1 if head.payload_status == FULL else 0`. The signal is fully determined by `head.payload_status`. ∎
+*Proof.* By the `attest` handler (Section 12.2, Attester), when `head_block.slot != slot` (the `else` branch, with `head_block = store.blocks[head.root]`), the body executes `data.index = 1 if head.payload_status == FULL else 0`. The signal is fully determined by `head.payload_status`. ∎
 
 ---
 
@@ -772,7 +843,7 @@ This property formalizes the "witness statement" design: PTC votes are observati
 
 This property bounds the conditions under which an honest builder may fail to reveal. It distinguishes honest withholding (a rational response to a non-canonical block) from dishonest withholding (strategic payload suppression).
 
-*Proof.* By the `reveal_payload` handler (Section 12.2, Builder), line 6 checks `if not is_head_of_chain(block, store)` and line 7 returns without broadcasting. This is the only early-return path after the builder-index check (lines 3–5). If `is_head_of_chain(block, store)` is true, the function proceeds to construct, sign, and broadcast the envelope (lines 8–21). ∎
+*Proof.* By the `reveal_payload` handler (Section 12.2, Builder), counting from `def reveal_payload(...)` as line 1: line 5 checks `if not is_head_of_chain(block, store)` and line 6 returns without broadcasting. This is the only early-return path after the builder-index check (lines 3–4). If `is_head_of_chain(block, store)` is true, the function proceeds to construct, sign, and broadcast the envelope (lines 7 onward). ∎
 
 ---
 
@@ -784,7 +855,7 @@ This property establishes that builders cannot unilaterally choose the payment d
 
 ---
 
-**Lemma H7** (Honest builder reveals via the cautious strategy). *Throughout this lemma and below, a* **real attestation** *for a block $B$ means an `Attestation` (or `SingleAttestation`) signed by a validator in the slot committee for `slot(B)` with `data.beacon_block_root = B.root` — i.e., an actual validator-cast vote, as distinct from the synthetic proposer-boost vote that `get_weight` injects via Algorithm 5 lines 12–15.*
+**Lemma H7** (Honest builder reveals via the cautious strategy). *Throughout this lemma and below, a* **real attestation** *for a block $B$ means an `Attestation` (or `SingleAttestation`) signed by a validator in the slot committee for `slot(B)` with `data.beacon_block_root = B.root` — i.e., an actual validator-cast vote, as distinct from the synthetic proposer-boost vote that `get_weight` injects via Algorithm 5 lines 13–20.*
 
 *An honest builder broadcasts the `SignedExecutionPayloadEnvelope` for a beacon block $B$ with bid `bid` only after the builder has observed (in its local store): (i) a single non-equivocating beacon block at slot $\mathit{slot}(B)$ containing `bid` (no proposer equivocation by $B.\mathit{proposer\_index}$ for that slot), and (ii) at least `PROPOSER_SCORE_BOOST = 40%` of a slot committee's effective balance in real attestations supporting $B$. Equivalently, an honest builder withholds whenever either condition fails.*
 
@@ -835,7 +906,7 @@ This lemma establishes that the FULL branch is gated entirely by local execution
 
 This lemma establishes that same-slot attesters — who are required to set `data.index = 0` (Section 12.2, Attester lines 9–10) because they vote at 25% of the slot, before the builder reveals at up to 75% (Definition 1) — cannot influence the FULL/EMPTY weight for the block they attested to. Their votes are not "counted as EMPTY" — they are excluded entirely from both sides.
 
-*Proof.* By Algorithm 4 (is_supporting_vote), when `vote.root == r` (line 4, Case 1): if `s == PENDING`, lines 5–6 return True (the vote supports PENDING). If `s ∈ {FULL, EMPTY}`: line 7 asserts `vote.slot >= block.slot` (votes targeting future blocks are invalid). If `vote.slot == block.slot` (the same-slot case covered by this lemma), lines 8–9 return False — the function exits before reaching line 10 (the payload-status check). Therefore, for any same-slot vote with `m.slot = slot(B)` and any `s ∈ {FULL, EMPTY}`, `is_supporting_vote(store, (r, s), m) = False`. Since `get_weight` (Algorithm 5, lines 7–11) only adds a validator's balance when `is_supporting_vote` returns True, the vote contributes zero weight to both (r, FULL) and (r, EMPTY). ∎
+*Proof.* By Algorithm 4 (is_supporting_vote), when `vote.root == r` (line 4, Case 1): if `s == PENDING`, lines 5–6 return True (the vote supports PENDING). If `s ∈ {FULL, EMPTY}`: line 7 asserts `vote.slot >= block.slot` (votes targeting future blocks are invalid). If `vote.slot == block.slot` (the same-slot case covered by this lemma), lines 8–9 return False — the function exits before reaching line 10 (the payload-status check). Therefore, for any same-slot vote with `m.slot = slot(B)` and any `s ∈ {FULL, EMPTY}`, `is_supporting_vote(store, (r, s), m) = False`. Since `get_weight` (Algorithm 5, lines 7–12) only adds a validator's balance when `is_supporting_vote` returns True, the vote contributes zero weight to both (r, FULL) and (r, EMPTY). ∎
 
 *Remark.* Same-slot votes do support (r, PENDING) (Algorithm 4, lines 5–6), which matters when competing blocks exist at the same slot (proposer equivocation). They also support ancestor nodes via Case 2 (Algorithm 4, lines 11–13), where `get_ancestor` determines the FULL/EMPTY attribution from the chain structure, not from the voter's `payload_present` field.
 
@@ -856,7 +927,7 @@ This lemma establishes that the fork-choice tree has a rigid alternating structu
 
 This lemma establishes that for the immediately previous slot's block, attestation weight plays no role in the FULL/EMPTY decision. The decision is delegated entirely to the tiebreaker (Definition 13), which reads PTC votes via `should_extend_payload` (Algorithm 6). This is why the PTC exists: for the most recent block, no validator has had the opportunity to cast a meaningful non-same-slot attestation about its payload status, so a separate voting mechanism (the PTC) is needed.
 
-*Proof.* By Algorithm 5 (get_weight), line 3 checks: `s != PENDING and store.blocks[r].slot + 1 == store.current_slot`. When `s ∈ {FULL, EMPTY}`, the first conjunct is true. When `slot(B) + 1 = current_slot`, the second conjunct is true. Both conditions hold, so line 4 executes: `return 0`. The function exits before reaching the attestation score computation (lines 5–11) or the proposer boost (lines 12–15). ∎
+*Proof.* By Algorithm 5 (get_weight), line 3 checks: `s != PENDING and store.blocks[r].slot + 1 == get_current_slot(store)`. When `s ∈ {FULL, EMPTY}`, the first conjunct is true. When `slot(B) + 1 = get_current_slot(store)`, the second conjunct is true. Both conditions hold, so line 4 executes: `return 0`. The function exits before reaching the attestation score computation (lines 5–12) or the proposer boost (lines 13–20). ∎
 
 *Remark.* The tiebreaker (Definition 13) assigns FULL a priority of 2 if `should_extend_payload` returns True, and 0 otherwise. EMPTY always gets priority 1. Since `get_head` (Algorithm 1, lines 8–10) uses the tiebreaker as the third sort key (after weight and root, both of which are equal for FULL and EMPTY of the same block), the PTC-based tiebreaker is the sole decision-maker for the immediately previous slot.
 
@@ -934,10 +1005,11 @@ H7's "$\geq 40\%$ at reveal time" is consistent with $(*)$ but strictly weaker t
 
 $B'$ is proposed at slot N+1 with `slot(B') = N+1` and `B'.parent_root = B.parent_root`. We bound the support for `(B'.root, PENDING)` at the moment slot N+1 starts (i.e., right after $B'$ has been broadcast and proposer-boosted, but before any slot-N+1 attestations have been cast at $T_{\mathrm{att}}$ of slot N+1):
 
-- **Proposer boost.** $B'$ receives proposer boost. By Algorithm 5 lines 12–15, the synthetic boost vote `(slot = N+1, root = B'.root, payload_present = False)` targets `B'.root`, and Algorithm 4 Case 1 line 5 confirms it supports `(B'.root, PENDING)`. The contribution is `get_proposer_score(store) = PROPOSER_SCORE_BOOST/100 · W = 0.4 W`.
+- **Proposer boost.** $B'$ receives proposer boost. By Algorithm 5 lines 13–20, the synthetic boost vote `(slot = N+1, root = B'.root, payload_present = False)` targets `B'.root`, and Algorithm 4 Case 1 line 5 confirms it supports `(B'.root, PENDING)`. The contribution is `get_proposer_score(store) = PROPOSER_SCORE_BOOST/100 · W = 0.4 W`.
 - **Slot-N attestations.** No slot-N attestation supports the node `(B'.root, PENDING)`. We check both cases of Algorithm 4 (`is_supporting_vote`):
-    - **Case 1** (line 4) requires `vote.root == B'.root`. Slot-N attestations have `vote.root == B.root` (the slot-N committee voted for $B$ per Step 1), and `B.root ≠ B'.root` (different blocks at different slots). So Case 1 does not match for $B'$.
-    - **Case 2** (line 11) computes `(anc_root, _) = get_ancestor(B.root, slot(B'))` and requires `anc_root == B'.root`. By Algorithm 3 line 3, since $\mathrm{slot}(B) = N \leq N+1 = \mathrm{slot}(B')$, `get_ancestor` returns `(B.root, PENDING)` — i.e., `anc_root == B.root ≠ B'.root`. So Case 2 does not support `(B'.root, PENDING)` either.
+
+  - **Case 1** (line 4) requires `vote.root == B'.root`. Slot-N attestations have `vote.root == B.root` (the slot-N committee voted for $B$ per Step 1), and `B.root ≠ B'.root` (different blocks at different slots). So Case 1 does not match for $B'$.
+  - **Case 2** (line 11) computes `(anc_root, _) = get_ancestor(B.root, slot(B'))` and requires `anc_root == B'.root`. By Algorithm 3 line 3, since $\mathrm{slot}(B) = N \leq N+1 = \mathrm{slot}(B')$, `get_ancestor` returns `(B.root, PENDING)` — i.e., `anc_root == B.root ≠ B'.root`. So Case 2 does not support `(B'.root, PENDING)` either.
 
   Hence no slot-N attestation contributes to the weight of `(B'.root, PENDING)`.
 - **Slot-N+1 attestations.** No slot-N+1 attestations have been cast yet — they fire at $T_{\mathrm{att}}$ of slot N+1, after the moment we are analysing. Their contribution is 0.
@@ -1096,11 +1168,8 @@ This formalises P3: a builder cannot commit to a bid it cannot pay, even across 
 **Lemma 12c** (Builder exit does not interfere with pending obligations). *Let builder index $i$ have its exit initiated at epoch $e$ via `initiate_builder_exit` (Helper 28). Let $\mathcal{P}_i$ denote the set of `BuilderPendingPayment` entries with `withdrawal.builder_index = i` outstanding in `state.builder_pending_payments` at epoch $e$, and let $\mathcal{W}_i$ denote the set of `BuilderPendingWithdrawal` entries with `builder_index = i` outstanding in `state.builder_pending_withdrawals` at epoch $e$. Then:*
 
 1. *(No new bids accepted.) For every slot $s$ with $\mathit{epoch}(s) \geq e$, `process_execution_payload_bid` (Helper 8, line 9) rejects any non-self-build bid for builder $i$, because `is_active_builder` (Helper 1) returns False once `withdrawable_epoch \neq \texttt{FAR\_FUTURE\_EPOCH}`.*
-
 2. *(Pending obligations settle on the normal schedule.) Every entry in $\mathcal{P}_i$ either (a) settles via Path A through `settle_builder_payment` (Helper 12a) — appending to `state.builder_pending_withdrawals` — within at most one slot of the exit, or (b) settles via Path B through `process_builder_pending_payments` (Helper 14) by the epoch boundary $e+1$ if `payment.weight ≥ quorum`, or (c) is silently discarded at the epoch boundary if the quorum is not met. In all three sub-cases, the entry is removed from `state.builder_pending_payments` by epoch $e+2$ (the 2-epoch sliding-window bound of Lemma 21).*
-
 3. *(IOUs are paid before the exit sweep.) The 2-epoch payment window is strictly shorter than $\texttt{MIN\_BUILDER\_WITHDRAWABILITY\_DELAY} = 64$ epochs. Therefore, by epoch $e + 2$, every entry of $\mathcal{P}_i$ that resolves into an IOU has already been written to `state.builder_pending_withdrawals`. From epoch $e+2$ through epoch $e+63$, `process_withdrawals` (Helper 13) drains those IOUs via `get_builder_withdrawals`, which runs strictly before `get_builders_sweep_withdrawals` in `get_expected_withdrawals` (`beacon-chain.md`). Each IOU debits builder $i$'s balance via `apply_withdrawals` (Helper 21) using `min(withdrawal.amount, builder_balance)`. From epoch $e + \texttt{MIN\_BUILDER\_WITHDRAWABILITY\_DELAY} = e + 64$ onward, `get_builders_sweep_withdrawals` becomes eligible to fire (the guard `builder.withdrawable_epoch \leq epoch` succeeds) and the residual balance is withdrawn to `builder.execution_address`.*
-
 4. *(Solvency at exit.) By Lemma 12b, at the time of every accepted bid prior to epoch $e$, builder $i$'s balance covered every outstanding obligation plus `MIN_DEPOSIT_AMOUNT`. Since no new bids are accepted from epoch $e$ onward (item 1), the obligation set $\mathcal{P}_i \cup \mathcal{W}_i$ does not grow. Therefore the balance available to honor pending IOUs at the time of `apply_withdrawals` is at least the original obligation total, and `min(withdrawal.amount, builder_balance)` reduces to `withdrawal.amount` in every case where Lemma 12b's invariant has been preserved (i.e., in the absence of out-of-band balance reductions such as a slashing event between bid acceptance and IOU processing).*
 
 This formalises the interaction between the builder lifecycle (Helpers 26–28) and the unconditional payment mechanism (Lemmas 9–11). The spec relies on a *temporal separation* — the 2-epoch payment window vs. the 64-epoch withdrawability delay — rather than an explicit inhibition of `initiate_builder_exit` while obligations are pending. The temporal separation is sufficient because the payment window is 32× shorter than the withdrawability delay.
@@ -1111,9 +1180,11 @@ This formalises the interaction between the builder lifecycle (Helpers 26–28) 
 
 *Item 2.* The case split (a)/(b)/(c) is exactly the case split of Lemma 11 (unconditional payment) and its proof in Cases 1, 2: Path A fires iff a subsequent block declares `parentStatus = FULL` for the slot of the pending payment; Path B fires iff `payment.weight ≥ quorum` at the epoch boundary; otherwise the entry is discarded. None of these mechanisms depend on `is_active_builder` — `process_attestation` (Helper 15, lines 28–32) accumulates weight on `payment.withdrawal.amount > 0` regardless of builder activity status, and `process_builder_pending_payments` (Helper 14) and `settle_builder_payment` (Helper 12a) operate on `state.builder_pending_payments[*]` directly. The 2-epoch sliding-window bound is established by Lemma 21 (the index written by Helper 8 is read by Helper 12b within the same or next epoch; older entries are evicted by Helper 14 lines 6–8).
 
-*Item 3.* `MIN_BUILDER_WITHDRAWABILITY_DELAY = 2^6 = 64` (Section 8 / `beacon-chain.md`), which is strictly greater than 2. The `get_builders_sweep_withdrawals` guard at `beacon-chain.md` line 1240 checks `builder.withdrawable_epoch <= epoch and builder.balance > 0`; since `withdrawable_epoch = e + 64`, the guard remains False through epoch $e + 63$ and only succeeds from epoch $e + 64$. The ordering of `get_builder_withdrawals` (which drains the IOU queue) before `get_builders_sweep_withdrawals` (which sweeps the residual) inside `get_expected_withdrawals` is a fixed property of the spec function (`beacon-chain.md`).
+*Item 3.* `MIN_BUILDER_WITHDRAWABILITY_DELAY = 2^6 = 64` (Section 8 / `beacon-chain.md`), which is strictly greater than 2.[^lem12c-constants] The `get_builders_sweep_withdrawals` guard at `beacon-chain.md` line 1239 checks `builder.withdrawable_epoch <= epoch and builder.balance > 0`; since `withdrawable_epoch = e + 64`, the guard remains False through epoch $e + 63$ and only succeeds from epoch $e + 64$. The ordering of `get_builder_withdrawals` (which drains the IOU queue) before `get_builders_sweep_withdrawals` (which sweeps the residual) inside `get_expected_withdrawals` is a fixed property of the spec function (`beacon-chain.md`).
 
-*Item 4.* Lemma 12b establishes the invariant `balance ≥ MIN_DEPOSIT_AMOUNT + pending` at every bid acceptance for builder $i$. Item 1 implies no new bids increase `pending` after epoch $e$. The set of obligations therefore monotonically shrinks (as IOUs are paid and discharged) over $[e, e+64]$. At the moment each IOU is presented to `apply_withdrawals`, the inequality `builder_balance ≥ withdrawal.amount` holds — provided no slashing, `seq_payment_underflow`, or out-of-band balance change has occurred (the standard caveat noted in Lemma 15's proof and Helper 6's commentary). The `min(amount, balance)` clause in `apply_withdrawals` line 1310 is the spec's defensive fallback for those edge cases. ∎
+[^lem12c-constants]: The Item 3 argument relies on the temporal separation between **two distinct constants**: the 2-epoch payment-settlement window (Lemma 21, fixed by the size of `state.builder_pending_payments`) and the 64-epoch withdrawability delay (`MIN_BUILDER_WITHDRAWABILITY_DELAY`). If either constant is changed in a future spec revision, Item 3 of this proof must be revisited: the lemma requires the payment-settlement window to be **strictly shorter** than the withdrawability delay so that every IOU resolves before the exit sweep activates. The current 32× margin is well-padded, but the proof is not a function of the gap — it is a function of the ordering.
+    
+*Item 4.* Lemma 12b establishes the invariant `balance ≥ MIN_DEPOSIT_AMOUNT + pending` at every bid acceptance for builder $i$. Item 1 implies no new bids increase `pending` after epoch $e$. The set of obligations therefore monotonically shrinks (as IOUs are paid and discharged) over $[e, e+64]$. At the moment each IOU is presented to `apply_withdrawals`, the inequality `builder_balance ≥ withdrawal.amount` holds — provided no slashing, `seq_payment_underflow`, or out-of-band balance change has occurred (the standard caveat noted in Lemma 15's proof and Helper 6's commentary). The `min(amount, balance)` clause in `apply_withdrawals` line 1309 is the spec's defensive fallback for those edge cases. ∎
 
 *Remark.* The lemma answers an audit-level question: *can a builder exit while it has outstanding obligations, and if so, are those obligations honored?* The answer is yes, and the spec's design relies on three interlocking mechanisms:
 
@@ -1234,7 +1305,7 @@ PTC votes are irrelevant to the payment mechanism. They go into `store.payload_t
 
 *Note on hypothesis realisability.* Hypothesis (2) requires at least 256 PTC members voting False. Under the document's standing β < 0.2 per-committee bound, the adversary controls at most $\lfloor 0.2 \cdot 512 \rfloor = 102$ PTC members — far below 256 — so hypothesis (2) **cannot be met by Byzantine PTC voting alone within the standard adversarial model**. The lemma therefore applies in an *extended* threat model where one of the following additionally holds: (a) per-PTC β is locally above $\sim 0.5$ in this slot (a deviation that is overwhelmingly unlikely under Lemma 26 unless global β' is itself near 0.5), or (b) an asynchronous adversary prevents enough honest PTC members from observing the envelope by $T_{\mathrm{ptc}}$ (so they vote False for lack of observation, per Lemma H4, even though they are honest). The lemma's value under standing assumptions is as a *worst-case bound* on damage *if* such an extended threat materialises, not as a description of an attack feasible under β < 0.2 alone.
 
-*Furthermore, under H7 (cautious-reveal builder) and the network-model synchrony assumption, the attacker must control: (a) enough PTC members to make `is_payload_timely` fail (i.e., enough to push $\sum \mathit{True} \leq \texttt{PTC\_SIZE}/2 = 256$, which requires at least $256$ adversarial votes if all $512$ members vote — under $\beta < 0.2$ this is itself infeasible without compromising synchrony, since adversary controls at most $\lfloor 0.2 \cdot 512 \rfloor = 102$ members); AND (b) the slot-$N+1$ proposer. Boost-only reorgs by the slot-$N+1$ proposer are insufficient — by Lemma 7 Part (b), under H7 + synchrony every honest slot-$N$ validator has voted for $B$ by $T_{\mathrm{att}}$, and the resulting bound $\mathit{weight}((B.\mathit{root}, \mathrm{PENDING})) \geq (1 - \beta)\, W > 0.8\, W$ at slot $N+1$ strictly exceeds the boost-induced upper bound $\mathit{weight}((B'.\mathit{root}, \mathrm{PENDING})) \leq 0.4\, W + \beta\, W \leq 0.6\, W$, so any sibling-reorg block $B'$ at slot $N+1$ cannot outweigh $B$ at the PENDING level. The attack therefore requires the colluder to settle on the alternative path of declaring $\mathit{parentStatus} = \mathrm{EMPTY}$ on $B$ (rather than reorging $B$ itself), which in turn requires the PTC primary path of `should_extend_payload` to fail. Hence both (a) a bribed PTC majority AND (b) a colluding next-slot proposer are needed; under balance-weighted PTC sampling (Lemma 26) and the validator-set composition, this combined resource requirement makes the attack expensive to mount.*
+*Why hypothesis (3) is formulated as "declares EMPTY" rather than "reorgs B."* Under H7 (cautious-reveal builder) and the network-model synchrony assumption, a slot-$N+1$ proposer cannot substitute a boost-only reorg of $B$ for the EMPTY declaration. By Lemma 7 Part (b), every honest slot-$N$ validator has voted for $B$ by $T_{\mathrm{att}}$, and the resulting bound $\mathit{weight}((B.\mathit{root}, \mathrm{PENDING})) \geq (1 - \beta)\, W > 0.8\, W$ at slot $N+1$ strictly exceeds the boost-induced upper bound $\mathit{weight}((B'.\mathit{root}, \mathrm{PENDING})) \leq 0.4\, W + \beta\, W \leq 0.6\, W$. Any sibling-reorg block $B'$ at slot $N+1$ therefore cannot outweigh $B$ at the PENDING level. The colluder is forced onto the alternative path of declaring $\mathit{parentStatus} = \mathrm{EMPTY}$ on $B$, which in turn requires the PTC primary path of `should_extend_payload` to fail — exactly hypothesis (2). The combined resource requirement (a bribed PTC majority *plus* a colluding next-slot proposer) is what makes the attack expensive to mount under balance-weighted PTC sampling (Lemma 26).*
 
 This is the worst-case scenario for PTC failure combined with proposer collusion: the PTC timeliness check fails (whether due to Byzantine PTC members or network issues) AND the next proposer colludes by building on the wrong branch. The colluders can suppress FULL for exactly one slot, but they cannot permanently alter the chain's view of B's payload status. The damage is bounded because the two-chain structure records B's payload delivery in `store.payloads` (which cannot be undone), and honest attesters in subsequent slots provide the corrective weight.
 
@@ -1291,7 +1362,7 @@ We split into two cases on the builder's intent:
 
 **Case 1: The builder is building on $B$-FULL.** This is rational precisely when `B.root ∈ store.payloads` (otherwise the FULL node does not exist by Lemma 1, the resulting block would fail `on_block`'s assertion at Algorithm 7 line 5, and the builder gains nothing). The builder calls `prepare_execution_payload` with the FULL branch selected, the simulation runs Helper 12b on the state copy, and on the copy `state.latest_block_hash = bid(B).block_hash`. Line 3 of `submit_bid` reads this value, so `bid.parent_block_hash = bid(B).block_hash`. By Definition 4, `parentStatus(B') = FULL`.
 
-**Case 2: The builder is building on $B$-EMPTY.** This corresponds to `B.root ∉ store.payloads` (or the builder's policy choice not to extend FULL even when available — but for an honest builder following the canonical fork-choice head, this only happens when the FULL node does not exist). `should_extend_payload(store, B.root)` returns False, the simulation skips the `apply_parent_execution_payload` call, and the state copy retains its pre-slot-$N$ value of `latest_block_hash`. Specifically, `latest_block_hash` was last updated by some earlier block's `apply_parent_execution_payload`, to that earlier block's `bid.block_hash` — call it $h_{\mathrm{prev}}$ with $h_{\mathrm{prev}} \neq$ `bid(B).block_hash` (different by the Definition 4 disjunction). Line 3 reads $h_{\mathrm{prev}}$, so `bid.parent_block_hash` $= h_{\mathrm{prev}} \neq$ `bid(B).block_hash`, and by Definition 4, `parentStatus(B') = EMPTY`.
+**Case 2: The builder is building on $B$-EMPTY.** An honest builder runs `get_head` (via `prepare_execution_payload` in the `submit_bid` handler) immediately before constructing the bid, and extends whatever payload status `get_head` selects — the honest-behavior code does not branch on builder policy. So the honest builder reaches Case 2 if and only if `get_head` returned $(B.\mathit{root}, \mathrm{EMPTY})$ when run on the local store. By Lemma 1, $(B.\mathit{root}, \mathrm{FULL})$ exists as a child of $(B.\mathit{root}, \mathrm{PENDING})$ if and only if $B.\mathit{root} \in \mathit{store.payloads}$; by Lemma 13, `get_head` cannot return $(B.\mathit{root}, \mathrm{FULL})$ when $B.\mathit{root} \notin \mathit{store.payloads}$. Therefore Case 2 corresponds exactly to $B.\mathit{root} \notin \mathit{store.payloads}$. In that case, `should_extend_payload(store, B.root)` returns False (the hard guard at Algorithm 6 line 2 fails), the simulation skips the `apply_parent_execution_payload` call, and the state copy retains its pre-slot-$N$ value of `latest_block_hash`. Specifically, `latest_block_hash` was last updated by some earlier block's `apply_parent_execution_payload`, to that earlier block's `bid.block_hash` — call it $h_{\mathrm{prev}}$ with $h_{\mathrm{prev}} \neq$ `bid(B).block_hash` (different by the Definition 4 disjunction). Line 3 reads $h_{\mathrm{prev}}$, so `bid.parent_block_hash` $= h_{\mathrm{prev}} \neq$ `bid(B).block_hash`, and by Definition 4, `parentStatus(B') = EMPTY`.
 
 Eventually, when slot-$N+1$'s block $B'$ is processed by all honest nodes, `process_parent_execution_payload` (Helper 12c) runs deterministically: it compares `bid(B').parent_block_hash` against the on-state `state.latest_execution_payload_bid.block_hash = bid(B).block_hash`, and either applies $B$'s execution effects (Case 1, FULL match) or asserts emptiness of `parent_execution_requests` and returns (Case 2, EMPTY match). The simulation result and the network's deterministic execution agree because both operate on the same state copy and bid data. ∎
 
@@ -1448,10 +1519,10 @@ The properties above assume **β < 20%**: the Byzantine fraction in any single s
 
 **Three parameters, one constraint.** The ePBS builder safety mechanism involves three interlocking parameters:
 
-| Parameter       | Value | Spec constant                                                                            | Role                                                  |
-| --------------- | ----- | ---------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| Proposer boost  | 40%   | `PROPOSER_SCORE_BOOST = 40`                                                              | Extra fork-choice weight for timely block             |
-| Reorg threshold | 20%   | `REORG_HEAD_WEIGHT_THRESHOLD = 20`                                                       | Below this, equivocation protection activates         |
+| Parameter       | Value | Spec constant                                                                                | Role                                                  |
+| --------------- | ----- | -------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Proposer boost  | 40%   | `PROPOSER_SCORE_BOOST = 40`                                                                | Extra fork-choice weight for timely block             |
+| Reorg threshold | 20%   | `REORG_HEAD_WEIGHT_THRESHOLD = 20`                                                         | Below this, equivocation protection activates         |
 | Payment quorum  | 60%   | `BUILDER_PAYMENT_THRESHOLD_NUMERATOR = 6` / `BUILDER_PAYMENT_THRESHOLD_DENOMINATOR = 10` | Minimum attestation weight for epoch-boundary payment |
 
 These are calibrated to each other via: **payment_quorum = reveal_threshold + adversary_budget = 40% + 20% = 60%**.
@@ -1477,6 +1548,8 @@ At slot N+1, the fork-choice compares:
 B' wins when $\beta + 40 > 100 - \beta$, i.e., $\beta > 30\%$. Under $\beta < 20\%$, the attack fails: $20 + 40 = 60 < 80 = 100 - 20$.
 
 **The `REORG_HEAD_WEIGHT_THRESHOLD = 20` defense.** The spec's `should_apply_proposer_boost` (`fork-choice.md`) adds an additional protection layer. When the boosted block's parent is from the immediately previous slot, the function checks `is_head_weak(store, parent_root)`: if the parent has < 20% of committee weight AND an equivocation from the parent's proposer is detected, the **boost is not applied**.
+
+In the table below, the rows track the slot-N equivocation block $B'$ (the parent of the slot-N+1 boost-attacker block), and "B' weight" is the quantity `is_head_weak(store, parent_root)` examines — i.e., the attestation weight of $B'$ itself. The "B' wins?" column asks whether the branch rooted at $B'$ (with the slot-N+1 block extending it) overtakes the honest block $B$.
 
 | $\beta$ range            | B' weight | `is_head_weak`?            | Boost applied? | B' wins?                                           |
 | -------------------------- | --------- | ---------------------------- | -------------- | -------------------------------------------------- |
@@ -1515,16 +1588,18 @@ A builder is active if two conditions hold: (1) the builder's deposit has been f
 
 *Spec reference: `is_active_builder` in `beacon-chain.md`.*
 
-#### Helper 2: is_parent_block_full
+#### Helper 2: parent_payload_revealed_in_state (pedagogical)
 
 ```python
-def is_parent_block_full(state):
+def parent_payload_revealed_in_state(state):
     return state.latest_execution_payload_bid.block_hash == state.latest_block_hash
 ```
 
-This function determines whether the parent block's execution payload was revealed, using only BeaconState fields. The comparison works because `latest_block_hash` is only updated by `apply_parent_execution_payload` (Helper 12b), which is called inside `process_parent_execution_payload` (Helper 12c) at the beginning of `process_block` (Helper 11) — if the parent's builder revealed and the current block declares FULL, `latest_block_hash` was set to the parent's `bid.block_hash`, so they match. If the builder withheld, `latest_block_hash` still holds a stale value from an earlier slot, so they differ. This is the BeaconState-level equivalent of `get_parent_payload_status` (Helper 3), which operates on fork-choice store data instead. It is used by `process_withdrawals` to decide whether to skip withdrawal processing (if the parent was empty, the withdrawal list depends on execution state that was never finalized).
+This is a pedagogical helper — **not a spec function** — used to make the FULL/EMPTY check inside `process_withdrawals` readable. The spec writes the equivalent comparison inline (see *Spec reference* below). We choose the name `parent_payload_revealed_in_state` to avoid collision with the real spec helper `is_parent_node_full(store, block)` (Helper 3 below, defined at `fork-choice.md` line 318), which has a different signature and operates on the fork-choice store rather than the BeaconState.
 
-*Spec reference: This is an abstraction of the inline check in `process_withdrawals` in `beacon-chain.md`, which uses `is_parent_block_empty = state.latest_block_hash != state.latest_execution_payload_bid.block_hash`.*
+The comparison works because `latest_block_hash` is only updated by `apply_parent_execution_payload` (Helper 12b), which is called inside `process_parent_execution_payload` (Helper 12c) at the beginning of `process_block` (Helper 11) — if the parent's builder revealed and the current block declares FULL, `latest_block_hash` was set to the parent's `bid.block_hash`, so they match. If the builder withheld, `latest_block_hash` still holds a stale value from an earlier slot, so they differ. It is used by `process_withdrawals` (Helper 13) to decide whether to skip withdrawal processing (if the parent was empty, the withdrawal list depends on execution state that was never finalized).
+
+*Spec reference: inline check in `process_withdrawals` in `beacon-chain.md`: `if state.latest_block_hash != state.latest_execution_payload_bid.block_hash: return`.*
 
 #### Helper 3: get_parent_payload_status
 
@@ -1619,7 +1694,7 @@ def process_execution_payload_bid(state, block):
         assert is_active_builder(state, builder_index)             # Helper 1
         assert can_builder_cover_bid(state, builder_index, amount) # Helper 6
         assert verify_execution_payload_bid_signature(state, block.body.signed_execution_payload_bid)
-    assert len(bid.blob_kzg_commitments) <= get_max_blobs(state)
+    assert len(bid.blob_kzg_commitments) <= get_blob_parameters(get_current_epoch(state)).max_blobs_per_block
     assert bid.slot == block.slot
     assert bid.parent_block_hash == state.latest_block_hash
     assert bid.parent_block_root == block.parent_root
@@ -1657,7 +1732,7 @@ If any of these fail, the entire beacon block is invalid and rejected by the net
 - **Builder reveals** (Path A): the next block's `process_parent_execution_payload` (Helper 12c) calls `apply_parent_execution_payload` (Helper 12b), which calls `settle_builder_payment` (Helper 12a) to queue the payment and clear the IOU.
 - **Builder withholds** (Path B): The pending payment sits there. Meanwhile, as attesters vote for this beacon block, `process_attestation` (Helper 15) accumulates their effective balances into `payment.weight`. At the epoch boundary, if enough weight accumulated (60% quorum), `process_builder_pending_payments` (Helper 14) queues the payment — the proposer gets paid even though the builder didn't deliver.
 
-**Line 27:** Caches the bid in state for later use by `verify_execution_payload_envelope` (Helper 12, which verifies the revealed payload matches the committed bid), `process_parent_execution_payload` (Helper 12c, which reads the parent bid to apply execution effects), and `is_parent_block_full` (Helper 2).
+**Line 27:** Caches the bid in state for later use by `verify_execution_payload_envelope` (Helper 12, which verifies the revealed payload matches the committed bid), `process_parent_execution_payload` (Helper 12c, which reads the parent bid to apply execution effects), and `parent_payload_revealed_in_state` (Helper 2).
 
 In one sentence: this function verifies the builder's promise is valid and arms the unconditional payment mechanism.
 
@@ -1862,7 +1937,7 @@ This function is the first step of `process_block` (Helper 11, line 2). It deter
 
 ```python
 def process_withdrawals(state):
-    if not is_parent_block_full(state):
+    if not parent_payload_revealed_in_state(state):
         return                                                     # Helper 2; skip if parent empty
     expected = get_expected_withdrawals(state)
     apply_withdrawals(state, expected.withdrawals)
@@ -1874,7 +1949,7 @@ def process_withdrawals(state):
     update_next_withdrawal_validator_index(state, expected.withdrawals)
 ```
 
-This function processes validator and builder withdrawals during `process_block` (Helper 11, line 4). The key ePBS modification is **line 2: the early return**. If the parent block's execution payload was not revealed (`is_parent_block_full` returns False — Helper 2), the function returns immediately and does nothing. This is because the withdrawal list depends on execution state (account balances, pending partial withdrawals) that was never finalized when the parent's payload was missing. Processing withdrawals against a stale execution state would produce incorrect results, so the protocol skips withdrawal processing entirely for blocks that build on an empty parent.
+This function processes validator and builder withdrawals during `process_block` (Helper 11, line 4). The key ePBS modification is **line 2: the early return**. If the parent block's execution payload was not revealed (`parent_payload_revealed_in_state` returns False — Helper 2), the function returns immediately and does nothing. This is because the withdrawal list depends on execution state (account balances, pending partial withdrawals) that was never finalized when the parent's payload was missing. Processing withdrawals against a stale execution state would produce incorrect results, so the protocol skips withdrawal processing entirely for blocks that build on an empty parent.
 
 When the parent was full (line 2 passes), the function proceeds normally: it computes the expected withdrawals (line 3), applies them — debiting builder and validator balances (line 4) — and updates the various sweep indices and caches (lines 5–10). Line 6 is new to ePBS: it caches the expected withdrawals in `state.payload_expected_withdrawals`, which `verify_execution_payload_envelope` (Helper 12, line 22) later checks against the revealed payload's actual withdrawals to ensure consistency.
 
@@ -1909,7 +1984,10 @@ def process_attestation(state, attestation):
     assert data.target.epoch in (get_previous_epoch(state), get_current_epoch(state))
     assert data.slot + MIN_ATTESTATION_INCLUSION_DELAY <= state.slot
     assert data.index < 2                                          # ePBS: only 0 or 1
-    # ... committee and aggregation validation (unchanged from pre-ePBS) ...
+    # ... committee/aggregation validation and the slot-vs-target consistency assert
+    # `data.target.epoch == compute_epoch_at_slot(data.slot)` (unchanged from pre-ePBS;
+    # see beacon-chain.md:1682 and the per-committee loop at 1687–1701). None of these
+    # checks is load-bearing for the lemmas in §12.4; we elide them for clarity ...
     participation_flag_indices = get_attestation_participation_flag_indices(
         state, data, state.slot - data.slot                        # Helper 16
     )
@@ -2117,7 +2195,11 @@ def process_proposer_slashing(state, proposer_slashing):
     assert header_1.proposer_index == header_2.proposer_index
     assert header_1 != header_2
     assert is_slashable_validator(state.validators[header_1.proposer_index], get_current_epoch(state))
-    # Verify both signatures ...
+    # Per-header BLS signature verification (unchanged from pre-ePBS;
+    # beacon-chain.md:1799–1805 iterates over both signed_headers and calls
+    # bls.Verify with DOMAIN_BEACON_PROPOSER). Not load-bearing for the lemmas
+    # in §12.4; elided here for readability.
+    # ... verify both signatures ...
     # [New in Gloas:EIP7732] Clear the builder's pending payment
     slot = header_1.slot
     proposal_epoch = compute_epoch_at_slot(slot)
@@ -2312,34 +2394,36 @@ $$
 
 *and symmetrically for the lower tail $\Pr[\beta_C < \beta' - \epsilon] \leq \exp(-2k\, \epsilon^2)$.*
 
-*Proof sketch.* By Lemma 25, each acceptance decision in Helper 30 selects a Byzantine validator with probability $\beta'$, conditional on being reached. The $k$ acceptance decisions are independent (each uses fresh random bytes from $\mathit{hash}(\mathit{seed} \,\|\, \mathit{counter})$ at lines 7–10). Let $X$ be the number of Byzantine members in $C$; then $X$ is a sum of $k$ independent Bernoulli($\beta'$) trials with $\mathbb{E}[X] = k\beta'$. By Hoeffding's inequality, $\Pr[X/k > \beta' + \epsilon] \leq \exp(-2k\,\epsilon^2)$. The lower-tail bound is symmetric. $\blacksquare$
+*Proof sketch.* Helper 30 implements rejection sampling with replacement: each loop iteration draws a candidate index and accepts it with probability proportional to its effective balance, independently of all other iterations.[^lem26-iid] Let $Y_1, \ldots, Y_k$ be the indicator variables for "the $j$-th accepted member is Byzantine." By Lemma 25, each accepted member is drawn from the active validator set with probability proportional to effective balance, so $\Pr[Y_j = 1 \mid \text{seed}] = \beta'$ and the $Y_j$ are conditionally independent given the seed. Since this conditional distribution does not depend on the seed, the $Y_j$ are unconditionally iid Bernoulli($\beta'$). Let $X = \sum_{j=1}^k Y_j$ be the number of Byzantine members in $C$; then $\mathbb{E}[X] = k\beta'$ and, by Hoeffding's inequality for bounded iid variables, $\Pr[X/k > \beta' + \epsilon] \leq \exp(-2k\,\epsilon^2)$. The lower-tail bound is symmetric. $\blacksquare$
 
+[^lem26-iid]: The rejection-sampling structure is essential here. The *attempts* (loop iterations) are independent and use fresh random bytes; the *acceptances* form a subsequence of the attempts. The classical Hoeffding bound applies to the iid indicators $Y_j$ on the accepted committee slots, not to per-iteration outcomes. Equivalently, this is sampling with replacement from the effective-balance distribution, for which Hoeffding's bound is tight; for sampling *without* replacement, Hoeffding's bound continues to hold (Hoeffding 1963, §6) and is in fact slightly stronger due to negative correlation.
+    
 #### Two operative instantiations of Lemma 26
 
 ePBS uses Lemma 26 at two committee sizes, with two different operative thresholds. **Each threshold is determined by the mechanism it serves, not by Lemma 26 itself.**
 
 **Instantiation A: PTC (size $k = 512$, threshold $\beta_{\text{PTC}} < 0.5$).** The PTC needs honest majority on `is_payload_timely` (Helper 4): $\sum \text{True} > 256$. This holds whenever $\beta_{\text{PTC}} < 0.5$.
 
-| $\beta'$ (global) | Required deviation $\epsilon = 0.5 - \beta'$ | $\Pr[\beta_{\text{PTC}} \geq 0.5]$ | Verdict |
-|---|---|---|---|
-| $0.10$ | $0.40$ | $\exp(-1024 \cdot 0.16) \approx 7\times 10^{-72}$ | Astronomical safety. |
-| $0.20$ | $0.30$ | $\exp(-1024 \cdot 0.09) \approx 9\times 10^{-41}$ | Astronomical safety. |
-| $0.30$ | $0.20$ | $\exp(-1024 \cdot 0.04) \approx 2\times 10^{-18}$ | Negligible. |
-| $0.40$ | $0.10$ | $\exp(-10.24) \approx 3.6\times 10^{-5}$ | Rare (~once per 28k slots ≈ 4 days). |
-| $0.45$ | $0.05$ | $\exp(-2.56) \approx 0.077$ | Problematic; would fail PTC majority once every ~13 slots. |
+| $\beta'$ (global) | Required deviation$\epsilon = 0.5 - \beta'$ | $\Pr[\beta_{\text{PTC}} \geq 0.5]$                | Verdict                                                    |
+| ------------------- | --------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------- |
+| $0.10$            | $0.40$                                      | $\exp(-1024 \cdot 0.16) \approx 7\times 10^{-72}$ | Astronomical safety.                                       |
+| $0.20$            | $0.30$                                      | $\exp(-1024 \cdot 0.09) \approx 9\times 10^{-41}$ | Astronomical safety.                                       |
+| $0.30$            | $0.20$                                      | $\exp(-1024 \cdot 0.04) \approx 2\times 10^{-18}$ | Negligible.                                                |
+| $0.40$            | $0.10$                                      | $\exp(-10.24) \approx 3.6\times 10^{-5}$          | Rare (~once per 28k slots ≈ 4 days).                      |
+| $0.45$            | $0.05$                                      | $\exp(-2.56) \approx 0.077$                       | Problematic; would fail PTC majority once every ~13 slots. |
 
 **Reading this table:** PTC majority is overwhelmingly safe for any global $\beta'$ comfortably below $0.5$. The PTC is a *robust* witness committee — the document's standing $\beta < 0.2$ per-committee bound is **not what makes the PTC work**; the PTC would keep working at much higher Byzantine fractions.
 
 **Instantiation B: slot attestation committee (size $k \approx 31{,}250$, threshold $\beta_{\text{slot}} < 0.2$).** With Ethereum's ~1M active validators distributed across 32 slots per epoch, each slot's combined attestation committees contain $\approx 31{,}250$ members. The payment-safety calibration (Section 12.4: $0.4 + \beta < 0.6$) requires per-slot-committee $\beta < 0.2$. The Hoeffding exponent is $2 \cdot 31{,}250 = 62{,}500$ — about $61\times$ tighter than the PTC instantiation.
 
-| $\beta'$ (global) | Required deviation $\epsilon = 0.2 - \beta'$ | $\Pr[\beta_{\text{slot}} \geq 0.2]$ | Verdict |
-|---|---|---|---|
-| $0.10$ | $0.10$ | $\exp(-625) \approx 0$ | Astronomical safety. |
-| $0.15$ | $0.05$ | $\exp(-156) \approx 10^{-68}$ | Astronomical safety. |
-| $0.18$ | $0.02$ | $\exp(-25) \approx 1.4 \times 10^{-11}$ | Effectively perfect safety. |
-| $0.19$ | $0.01$ | $\exp(-6.25) \approx 0.0019$ | $\approx 99.8\%$ slot reliability — rare failures (~once per 530 slots ≈ 1.8 hours). |
-| $0.195$ | $0.005$ | $\exp(-1.56) \approx 0.21$ | Problematic: ~21% of slots could fail payment safety. |
-| $0.20$ | $0$ | (boundary) | Failing half the time. |
+| $\beta'$ (global) | Required deviation$\epsilon = 0.2 - \beta'$ | $\Pr[\beta_{\text{slot}} \geq 0.2]$     | Verdict                                                                                  |
+| ------------------- | --------------------------------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------------- |
+| $0.10$            | $0.10$                                      | $\exp(-625) \approx 0$                  | Astronomical safety.                                                                     |
+| $0.15$            | $0.05$                                      | $\exp(-156) \approx 10^{-68}$           | Astronomical safety.                                                                     |
+| $0.18$            | $0.02$                                      | $\exp(-25) \approx 1.4 \times 10^{-11}$ | Effectively perfect safety.                                                              |
+| $0.19$            | $0.01$                                      | $\exp(-6.25) \approx 0.0019$            | $\approx 99.8\%$ slot reliability — rare failures (~once per 530 slots ≈ 1.8 hours). |
+| $0.195$           | $0.005$                                     | $\exp(-1.56) \approx 0.21$              | Problematic: ~21% of slots could fail payment safety.                                    |
+| $0.20$            | $0$                                         | (boundary)                                | Failing half the time.                                                                   |
 
 **Reading this table:** the payment-safety threshold is *much more sensitive* to global $\beta'$ than the PTC threshold, but the *concentration is also much tighter* (committee 61× larger). Even a 1pp margin ($\beta' = 0.19$) yields ~99.8% per-slot reliability; a 2pp margin ($\beta' = 0.18$) is essentially perfect. The danger zone is within ~1pp of $0.20$, not 5–10pp as the PTC-scale numbers might naively suggest.
 
@@ -2430,6 +2514,8 @@ A common scenario in ePBS analysis is a missed slot (no block proposed) followed
 *Remark.* This lemma is the foundation for Lemma 8 (attestation fallback for missed slots) and Lemma 11's Case 2 sub-case (b). It also clarifies a subtle point in the attack analysis: at the start of slot N + 1, when an honest builder runs `get_head` to construct its bid, `proposer_boost_root` has been reset by `on_tick_per_slot` regardless of whether slot N + 1 will be missed. The reset happens at the slot boundary, before any block could arrive.
 
 ### 12.6 Free Option Analysis
+
+*Pedagogical notation.* In the definitions below, we write `slot_start(N)` as a shorthand for `compute_time_at_slot(state, N)` — the wall-clock start time of slot N, equivalently `state.genesis_time + N * SECONDS_PER_SLOT`. `slot_start` is not a Gloas spec function; we use it for narrative clarity in the timing definitions.
 
 The slot timeline (Definition 1) places the bid commitment at the proposer's beacon block broadcast (t = 0) and the payload reveal deadline at the PTC vote time (t = T_ptc). The interval between these two events is observable by the builder, who has already committed to a bid value but has not yet decided whether to reveal the payload. During this interval, the builder may observe new market information (e.g., centralized-exchange price movements) and adjust its decision. This subsection states the formal definitions and lemmas that describe this strategic situation and the spec-level mechanisms that bound it.
 
