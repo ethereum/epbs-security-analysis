@@ -8,9 +8,41 @@ This document is the first part of a security analysis of ePBS. We walk through 
 
 **Who should read this.** Anyone who wants a rigorous but readable account of how ePBS works: what changed from pre-ePBS, why, and what guarantees the protocol provides. We assume familiarity with Ethereum's consensus layer (Gasper, LMD-GHOST, FFG, attestation committees, fork choice). We do not assume prior knowledge of EIP-7732.
 
-**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`5aa6eec`](https://github.com/ethereum/consensus-specs/commit/5aa6eec), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/master/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
+**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`792a8b0`](https://github.com/ethereum/consensus-specs/commit/792a8b0), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/master/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
 
-**Notation.** Code blocks use Python syntax at an abstracted level. An `...` in arguments or fields means "additional fields omitted for brevity" (they exist in the spec but are not needed for the point being made). Helper calls without bodies (e.g., `select_one_bid(bids)`, `is_head_of_chain(block, store)`) abstract over auxiliary logic whose implementations appear in the formal treatment.
+**Notation.** Code blocks use Python syntax at an abstracted level. An `...` in arguments or fields means "additional fields omitted for brevity." Two conventions are worth knowing upfront; the rest are reference material in the expandable table below.
+
+- **Tuple form for fork-choice nodes.** We write `(root, payload_status)` for what the spec encodes as `ForkChoiceNode(root=..., payload_status=...)` (`fork-choice.md` line 104).
+- **`sign(x)` and `broadcast(x)`.** Standard BLS signing and gossip publication. The spec uses domain-specific named signers (`get_attestation_signature`, `get_proposer_preferences_signature`, `get_payload_attestation_message_signature`, `get_block_signature`); we use `sign(x)` as a uniform shorthand and `broadcast(x)` for the gossip layer.
+
+<details>
+<summary><b>Full pedagogical-abstractions table</b> (click to expand)</summary>
+
+Every name below is a pedagogical helper, not a spec function. Each one abstracts a piece of spec prose or a generic operation; the complete spec-grounded versions of these handlers appear in the [formal treatment](https://github.com/ethereum/epbs-security-analysis/blob/formal-treatment/ePBS-pseudocode.md).
+
+*Proposer- and PTC-side helpers (Sections 4–5):*
+
+| Name                                                                                        | Spec source                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `collect_valid_bids(state, slot)`                                                         | "Listen to the `execution_payload_bid` gossip global topic and save an accepted `signed_execution_payload_bid` from a builder" (`validator.md`, §"Signed execution payload bid")                |
+| `select_one_bid(bids)`                                                                    | "Select one bid …" (`validator.md`, §"Signed execution payload bid")                                                                                                                               |
+| `aggregate_ptc_votes(slot - 1)`                                                           | "The proposer MUST aggregate all payload attestations with the same data" (`validator.md`, §"Payload attestations")                                                                                 |
+| `construct_beacon_block(state, body)`                                                     | Standard `BeaconBlock` container construction with `slot`, `proposer_index`, `parent_root`, `state_root`, `body`.                                                                          |
+| `get_parent_execution_requests(store, state)`                                             | Three-case logic in `validator.md` §"Parent execution requests" (empty if pre-Gloas, `store.payloads[parent_root].execution_requests` if `should_extend_payload` is true, empty otherwise).     |
+| `is_head_of_chain(block, store)`                                                          | Shorthand for `get_head(store).root == hash_tree_root(block)` — the "head of the builder's chain" check from `builder.md` §"Honest payload withheld messages".                                   |
+| `has_beacon_block_for_slot(store, slot)`, `get_beacon_block_root_for_slot(store, slot)` | Inline checks in `validator.md` §"Constructing the `PayloadAttestationMessage`": the PTC member checks whether it has seen any beacon block for the assigned slot and obtains its hash tree root. |
+| `has_execution_payload_envelope(store, root)`                                             | Shorthand for `root in store.payloads` (equivalent to `is_payload_verified(store, root)` in `fork-choice.md`).                                                                                   |
+| `check_blob_data(store, root)`                                                            | The spec function is `is_data_available(beacon_block_root)` (`fork-choice.md`); we keep `store` in the signature so reads are visible at the call site.                                          |
+| `execution_engine.build_payload(...)`                                                     | The two-step spec flow `notify_forkchoice_updated(...) → engine_getPayloadV6(payload_id)`; we collapse to a single call returning the `(payload, execution_requests)` bundle.                     |
+
+*Math notation in §8 (proof sketches):*
+
+| Name                                                                                                  | Spec source                                                                                                                                                                                                                                                                                                                   |
+| ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `slot(B)`, `parent(B)`, `state(B)`                                                              | "the slot of block B", "the parent block of B", "the post-state of B" — i.e.,`B.slot`, `store.blocks[B.parent_root]`, and `store.block_states[hash_tree_root(B)]` respectively.                                                                                                                                        |
+| `active_validators(store)`, `latest_message(v)`, `effective_balance(v)`, `child_blocks_of(r)` | Pedagogical helpers in the §8 G-assumption sketches; abbreviate `get_active_validator_indices(state, get_current_epoch(state))`, `store.latest_messages[v]`, `state.validators[v].effective_balance`, and the children-of-`r` filter that `get_node_children` (`fork-choice.md` line 534) applies, respectively. |
+
+</details>
 
 ---
 
@@ -182,22 +214,24 @@ The builder, observing the proposer's preferences, constructs an execution paylo
 ```python
 @Upon(received SignedProposerPreferences for upcoming_slot)
 def submit_bid(builder, upcoming_slot, state, proposer_preferences):
-    payload = execution_engine.build_payload(
+    payload, execution_requests = execution_engine.build_payload(
         parent_hash=state.latest_block_hash,
         fee_recipient=proposer_preferences.fee_recipient,  # MUST match preferences
         gas_limit=proposer_preferences.gas_limit,          # MUST match preferences
         ...,
     )
     bid = ExecutionPayloadBid(
-        block_hash=payload.block_hash,                      # The binding commitment
-        value=builder.bid_amount,                           # Amount offered to proposer
+        block_hash=payload.block_hash,                          # The binding commitment
+        value=builder.bid_amount,                               # Amount offered to proposer
         builder_index=builder.index,
         slot=upcoming_slot,
         parent_block_hash=state.latest_block_hash,
+        execution_requests_root=hash_tree_root(execution_requests),
         ...,
     )
     broadcast(SignedExecutionPayloadBid(bid, sign(bid)))
     builder.stored_payload = payload                        # (A1) saved for reveal — same object used in reveal_payload
+    builder.stored_requests = execution_requests            # (A1) execution requests come from the same bundle
 ```
 
 **The builder constructs the full payload before submitting the bid, because `bid.block_hash` must equal the actual payload's hash.** This is a binding commitment: when the builder later reveals, the revealed payload must match this hash exactly. The other key field is `bid.parent_block_hash`, which declares which execution chain tip the builder built on — this is how the next block signals whether it treats its parent as FULL or EMPTY (explained fully in Section 6, "The two-chain structure").
@@ -282,23 +316,28 @@ The other key new function called here is `process_execution_payload_bid`, which
 
 ```python
 def process_execution_payload_bid(state, block):
-    bid = block.body.signed_execution_payload_bid.message
+    signed_bid = block.body.signed_execution_payload_bid
+    bid = signed_bid.message
 
     # 1. Verify the builder is eligible
     if bid.builder_index == BUILDER_INDEX_SELF_BUILD:
-        assert bid.value == 0                               # Proposer doesn't pay itself
+        assert bid.value == 0                                # Proposer doesn't pay itself
+        assert signed_bid.signature == G2_POINT_AT_INFINITY  # Self-build sentinel signature
     else:
         assert is_active_builder(state, bid.builder_index)
         assert can_builder_cover_bid(state, bid.builder_index, bid.value)
-        assert verify_execution_payload_bid_signature(state, block.body.signed_execution_payload_bid)
+        assert verify_execution_payload_bid_signature(state, signed_bid)
 
     # 2. Verify the bid matches the chain state
     assert bid.slot == block.slot
     assert bid.parent_block_hash == state.latest_block_hash    # Execution chain consistency
     assert bid.parent_block_root == block.parent_root          # Consensus chain consistency
 
-    # 3. Record the IOU: builder owes proposer bid.value
+    # 3. Record the IOU: builder owes proposer bid.value.
+    #    The ring buffer indexes the bid's slot in the upper (current-epoch) half;
+    #    the lower half holds the previous epoch's entries (Section 5).
     if bid.value > 0:
+        slot_index = SLOTS_PER_EPOCH + (bid.slot % SLOTS_PER_EPOCH)
         payment = BuilderPendingPayment(weight=0, withdrawal=...)
         state.builder_pending_payments[slot_index] = payment
 
@@ -334,12 +373,13 @@ Honest attesters run the fork-choice function and broadcast their vote:
 @Upon(time_in_slot == T_ATT and validator in committee)
 def attest(validator, slot, state, store):
     head = get_head(store)
+    head_block = store.blocks[head.root]
     data = AttestationData(slot=slot, beacon_block_root=head.root, ...)
-    if head.slot == slot:                       # Same-slot attestation
+    if head_block.slot == slot:                 # Same-slot attestation
         data.index = 0                          # (A2) signal zero — no payload opinion possible
     else:                                       # Non-same-slot attestation
         data.index = 1 if head.payload_status == FULL else 0  # (A3) signal FULL/EMPTY consistently
-    broadcast(sign_attestation(validator, data))
+    broadcast(sign(data))
 ```
 
 **Same-slot attesters are payload-neutral: `data.index = 0` always for the current slot's block.** The attester cannot know whether the payload will be revealed — the builder has until 75% of the slot, but the attester votes at 25%. Their votes count toward the block's existence (PENDING) and toward ancestor branches via the chain structure, but not toward the FULL/EMPTY decision for this specific block.
@@ -396,9 +436,11 @@ When nodes receive the envelope, they run `on_execution_payload_envelope`. This 
 ```python
 def on_execution_payload_envelope(store, signed_envelope):
     envelope = signed_envelope.message
+    assert envelope.beacon_block_root in store.block_states     # Block must be known
+    assert is_data_available(envelope.beacon_block_root)        # Blob data must be retrievable
     state = store.block_states[envelope.beacon_block_root]
-    verify_execution_payload_envelope(state, signed_envelope, execution_engine)  # Verify EL validity
-    store.payloads[envelope.beacon_block_root] = envelope      # Enables FULL node
+    verify_execution_payload_envelope(state, signed_envelope, EXECUTION_ENGINE)  # Verify EL validity
+    store.payloads[envelope.beacon_block_root] = envelope       # Enables FULL node
 ```
 
 **The single line `store.payloads[root] = envelope` is the only place where the FULL node becomes available in the fork-choice tree.** If `verify_execution_payload_envelope` fails (invalid payload, EL rejection, blob data unavailable), this line is never reached and the FULL node is never created. Note that `store.payloads` stores the envelope itself (not a post-state) — the execution-layer state effects are applied later, inside `process_parent_execution_payload` when the next block is processed (see Phase 1b).
@@ -722,11 +764,11 @@ The following assumptions are grounded in the `@Upon` handlers shown in Sections
 
 **(A2) Honest same-slot attesters signal zero.** An honest attester whose fork-choice head is a block from the attester's own slot sets `data.index = 0`.
 
-*Grounding:* Phase 2, `attest` lines 4–5 (`if head.slot == slot: data.index = 0`). No other branch is reachable when `head.slot == slot`.
+*Grounding:* Phase 2, `attest` (`if head_block.slot == slot: data.index = 0` where `head_block = store.blocks[head.root]`). No other branch is reachable in that arm.
 
 **(A3) Honest non-same-slot attesters signal consistently.** An honest attester whose fork-choice head is a block from a previous slot sets `data.index = 1` if `head.payload_status == FULL`, and `data.index = 0` otherwise.
 
-*Grounding:* Phase 2, `attest` lines 6–7 (`else: data.index = 1 if head.payload_status == FULL else 0`).
+*Grounding:* Phase 2, `attest` (`else: data.index = 1 if head.payload_status == FULL else 0`).
 
 **(A4) Honest PTC members report observation, not validity.** An honest PTC member sets `payload_present = True` if and only if it has locally observed a `SignedExecutionPayloadEnvelope` for the block; it sets `blob_data_available = True` if and only if the blob data columns it is responsible for arrived and pass KZG verification. The PTC vote handler does not call `verify_execution_payload_envelope` or any execution validation function — the vote is conditioned on envelope arrival, not on validity. (PTC members, being full nodes, do run `on_execution_payload_envelope` as part of normal operation, but this is independent of their PTC duty.)
 
@@ -1001,15 +1043,15 @@ The four-case adversarial table (Section 7) traces all combinations. The PTC pri
 
 The following table shows which assumptions each property depends on:
 
-| Property | Behavioral (A) | Algorithmic (G)                          |
-| -------- | -------------- | ---------------------------------------- |
-| P1       | A6             | G-PayAttest, G-PayEpoch                  |
-| P2       | A4             | G-Tiebreaker                             |
-| P3       | —             | G-Solvency                               |
-| P4       | A1             | —                                       |
-| P5       | —             | G-PayEpoch                               |
-| P6       | —             | G-PayAttest, G-PayEpoch                  |
-| P7       | A3             | G-Vote.1, G-Weight                       |
+| Property | Behavioral (A) | Algorithmic (G)         |
+| -------- | -------------- | ----------------------- |
+| P1       | A6             | G-PayAttest, G-PayEpoch |
+| P2       | A4             | G-Tiebreaker            |
+| P3       | —             | G-Solvency              |
+| P4       | A1             | —                      |
+| P5       | —             | G-PayEpoch              |
+| P6       | —             | G-PayAttest, G-PayEpoch |
+| P7       | A3             | G-Vote.1, G-Weight      |
 
 One property (P4) is fully argued from a behavioral assumption directly visible in the `@Upon` handlers. The remaining six properties each require one or more algorithmic assumptions about internal spec functions. The companion [formal treatment](https://github.com/ethereum/epbs-security-analysis/blob/formal-treatment/ePBS-pseudocode.md) (on the `formal-treatment` branch) provides the full implementations of these functions and proves every A- and G-assumption as a lemma (A1→H3, A2→H1, A3→H2, A4→H4, A5→H5, A6→H7).
 
