@@ -94,7 +94,7 @@ ePBS introduces one new actor and modifies the role of existing ones.
 
 ## 3. How an execution payload becomes part of the chain
 
-> **TL;DR.** ePBS splits each block into two pieces that propagate separately: the **beacon block** carries consensus data and the builder's bid; the **execution payload** is revealed later by the builder. The beacon chain stores **bids** (hashes), not payloads — so anything the protocol can guarantee about payloads is expressed in terms of hashes. We define a function $\texttt{block\\_status}(\mathit{chain}, B)$ that yields FULL/EMPTY for a (chain, block) pair, and a **payload hash chain** — the sequence of `bid.block_hash` values from FULL blocks on the canonical chain. A payload hash is **on chain** iff it belongs to this chain. A revealed execution payload is considered fully delivered only when both the payload and the associated blob data are available; P4 (§4) promotes hash-on-chain to "payload available + valid + blob data available".
+> **TL;DR.** ePBS splits each block into two pieces that propagate separately: the **beacon block** carries consensus data and the builder's bid; the **execution payload** is revealed later by the builder. The beacon chain stores **bids** (hashes), not payloads — so anything the protocol can guarantee about payloads is expressed in terms of hashes. We define a function `block_status(chain, B)` that yields FULL/EMPTY for a (chain, block) pair, and a **payload hash chain** — the sequence of `bid.block_hash` values from FULL blocks on the canonical chain. A payload hash is **on chain** iff it belongs to this chain. A revealed execution payload is considered fully delivered only when both the payload and the associated blob data are available; P4 (§4) promotes hash-on-chain to "payload available + valid + blob data available".
 
 ### Two pointers, two chains
 
@@ -135,10 +135,10 @@ We now define formally what it means for a block to be **FULL** or **EMPTY**.
 
 > **Definition (Block status).** For a non-head block $B$ on a canonical beacon chain $\mathit{chain}$, let $C$ denote $B$'s child in $\mathit{chain}$ (the unique canonical block whose `parent_root` equals $B$'s hash-tree root). Then:
 >
-> - $\texttt{block\\_status}(\mathit{chain}, B) = $ **FULL** if $\texttt{bid}(C).\texttt{parent\\_block\\_hash} = \texttt{bid}(B).\texttt{block\\_hash}$;
-> - $\texttt{block\\_status}(\mathit{chain}, B) = $ **EMPTY** otherwise.
+> - `block_status(chain, B)` is **FULL** if `bid(C).parent_block_hash` equals `bid(B).block_hash`;
+> - `block_status(chain, B)` is **EMPTY** otherwise.
 >
-> When $B$ is the head of $\mathit{chain}$, $\texttt{block\\_status}$ is **undefined** — $B$'s `bid.block_hash` has been committed but no child exists yet to reference it. Status becomes defined once $B$'s child lands.
+> When $B$ is the head of `chain`, `block_status` is **undefined** — $B$'s `bid.block_hash` has been committed but no child exists yet to reference it. Status becomes defined once $B$'s child lands.
 
 **Why the function takes the chain as an argument.** FULL/EMPTY is not an intrinsic property of $B$. The definition depends on $B$'s **child** in $\mathit{chain}$ — and the child is a property of the chain, not of $B$. A reorg that replaces $B$'s child can flip $B$'s status without $B$ changing. The explicit `chain` argument is a structural reminder that status is meaningful only relative to a fixed canonical branch.
 
@@ -148,7 +148,7 @@ We now define formally what it means for a block to be **FULL** or **EMPTY**.
 
 **Why the child alone determines the status.** Once $B$'s child $C$ declares EMPTY for $B$ (i.e., $C$'s `bid.parent_block_hash` does not equal $B$'s `bid.block_hash`), no later canonical block can declare FULL for $B$: `state.latest_block_hash` after $C$ no longer holds $B$'s `bid.block_hash`, and every subsequent block reads `state.latest_block_hash` to set its own `bid.parent_block_hash`. So the verdict is fixed by $C$ and cannot be revised by later blocks.
 
-Throughout this document, when we say "$B$ is FULL on chain" without qualification we mean $\texttt{block\\_status}(\mathit{canonical}, B) = \mathrm{FULL}$, where $\mathit{canonical}$ is the current canonical beacon chain.
+Throughout this document, when we say "$B$ is FULL on chain" without qualification we mean `block_status(canonical, B) = FULL`, where `canonical` is the current canonical beacon chain.
 
 ### The payload hash chain
 
@@ -156,11 +156,11 @@ Block statuses on the canonical chain induce a chain over payload hashes. This i
 
 > **Definition (Payload hash chain).** Given a head beacon block $B$ on the canonical chain, the **payload hash chain** is the sequence of payload hashes $h^{(0)}, h^{(1)}, h^{(2)}, \ldots$ defined by:
 >
-> - **Base case.** $h^{(0)} := \texttt{bid}(B).\texttt{parent\\_block\\_hash}$ — the hash of the latest confirmed execution payload (the one referenced by $B$'s bid as its parent).
-> - **Recurrence (for each $k \geq 0$).** Let $B^{(k)}$ be the unique canonical ancestor of $B$ such that $\texttt{bid}(B^{(k)}).\texttt{block\\_hash} = h^{(k)}$ — i.e., $B^{(k)}$ itself is the block whose bid committed to the payload with hash $h^{(k)}$. Then set $h^{(k+1)} := \texttt{bid}(B^{(k)}).\texttt{parent\\_block\\_hash}$.
+> - **Base case.** $h^{(0)}$ is $B$'s `bid.parent_block_hash` — the hash of the latest confirmed execution payload (the one referenced by $B$'s bid as its parent).
+> - **Recurrence (for each $k \geq 0$).** Let $B^{(k)}$ be the unique canonical ancestor of $B$ whose `bid.block_hash` equals $h^{(k)}$ — i.e., $B^{(k)}$ itself is the block whose bid committed to the payload with hash $h^{(k)}$. Then set $h^{(k+1)}$ to $B^{(k)}$'s `bid.parent_block_hash`.
 > - **Termination.** The recurrence stops when no such $B^{(k)}$ exists — i.e., when $h^{(k)}$ corresponds to a payload at or before genesis (or the slot before ePBS activation).
 
-**Equivalent characterization.** A payload hash $h$ belongs to the payload hash chain if and only if there exists a non-head canonical block $B^*$ such that $\texttt{bid}(B^*).\texttt{block\\_hash} = h$ AND $\texttt{block\\_status}(\mathit{canonical}, B^*) = \mathrm{FULL}$. In other words, **the payload hash chain is the sequence of `bid.block_hash` values from every FULL block on the canonical chain** (FULL is undefined at the head, so the head's `bid.block_hash` is *not* on chain — it only enters once a successor lands), ordered from head back to genesis.
+**Equivalent characterization.** A payload hash $h$ belongs to the payload hash chain if and only if there exists a non-head canonical block $B^*$ such that $B^*$'s `bid.block_hash` equals $h$ AND $B^*$ is **FULL** on the canonical chain. In other words, **the payload hash chain is the sequence of `bid.block_hash` values from every FULL block on the canonical chain** (FULL is undefined at the head, so the head's `bid.block_hash` is *not* on chain — it only enters once a successor lands), ordered from head back to genesis.
 
 > **Definition (Payload hash on chain).** A payload hash $h$ is **on chain** if it belongs to the payload hash chain of the canonical beacon chain at the time of inspection.
 
@@ -1249,7 +1249,7 @@ In both cases the proposer receives a `BuilderPendingWithdrawal`.
 
 **P2 (Builder revealing protection).**
 
-*Claim:* Under **S1** (synchrony), **S2** (β < 20%), and the **S4** hypotheses that the slot-N PTC majority is honest and the slot-N+1 proposer is honest: if an honest builder reveals its payload at slot N (call the bid $\texttt{bid}(B)$), then $\texttt{bid}(B).\texttt{block\\_hash}$ is added to the payload hash chain of the canonical beacon chain — equivalently, $\texttt{block\\_status}(\mathit{canonical}, B) = \mathrm{FULL}$ once the slot-N+1 block lands.
+*Claim:* Under **S1** (synchrony), **S2** (β < 20%), and the **S4** hypotheses that the slot-N PTC majority is honest and the slot-N+1 proposer is honest: if an honest builder reveals its payload at slot N (call the block $B$), then `bid(B).block_hash` is added to the payload hash chain of the canonical beacon chain — equivalently, $B$ is **FULL** on the canonical chain once the slot-N+1 block lands.
 
 <details>
 <summary><b>Proof sketch</b> (click to expand)</summary>
@@ -1300,11 +1300,11 @@ In both cases, the path to charging the builder requires either a quorum reached
 <details>
 <summary><b>Proof sketch</b> (click to expand)</summary>
 
-*Proof.* Suppose $h$ is on chain. By the §3 equivalent characterization, there exist canonical blocks $B^*$ (with $\texttt{bid}(B^*).\texttt{block\\_hash} = h$) and $C$, $B^*$'s child in the canonical chain, satisfying $\texttt{bid}(C).\texttt{parent\\_block\\_hash} = h$. Since $C$ declares $\texttt{parentStatus}(B^*) = \mathrm{FULL}$, by **G-BlockAdmit** every honest node that admitted $C$ into its canonical chain must have $B^*.\texttt{root} \in \texttt{store.payloads}$ at $C$'s admission time. Under **S2** (β < 20%) and **S4** (honest super-majority of slot-(N+1) attesters and honest slot-N+1 proposer, where $B^*$ is at slot N), $C$ was admitted by every honest super-majority node — so every such node has $B^*.\texttt{root} \in \texttt{store.payloads}$.
+*Proof.* Suppose $h$ is on chain. By the §3 equivalent characterization, there exist canonical blocks $B^*$ (with $B^*$'s `bid.block_hash` equal to $h$) and $C$, $B^*$'s child in the canonical chain, satisfying $C$'s `bid.parent_block_hash` equal to $h$. Since $C$ declares $\texttt{parentStatus}(B^*) = \mathrm{FULL}$, by **G-BlockAdmit** every honest node that admitted $C$ into its canonical chain must have $B^*.\texttt{root} \in \texttt{store.payloads}$ at $C$'s admission time. Under **S2** (β < 20%) and **S4** (honest super-majority of slot-(N+1) attesters and honest slot-N+1 proposer, where $B^*$ is at slot N), $C$ was admitted by every honest super-majority node — so every such node has $B^*.\texttt{root} \in \texttt{store.payloads}$.
 
 The only path to populating $\texttt{store.payloads}[B^*.\texttt{root}]$ is `on_execution_payload_envelope` (§5 Phase 3), which requires (i) `is_data_available(envelope.beacon_block_root)` to pass at line 4 — the blob data the node sampled arrived and passed KZG verification — and (ii) `verify_execution_payload_envelope` to pass at line 6 — the payload was validated by the execution engine. Hence the payload with hash $h$ is *available* (it sits in `store.payloads`), *valid* (passed `verify_execution_payload_envelope`), and its blob data is *available* (passed `is_data_available`).
 
-*Contrapositive (unavailability ⟹ hash not on chain):* if either the payload or the sampled blob data is unavailable to the honest super-majority, then no honest super-majority node populates `store.payloads[B.root]`; by **G-Struct**, the `(B, \mathrm{FULL})` node is absent from those nodes' fork-choice trees; the honest slot-N+1 proposer's `should_extend_payload(B)` fails at the `is_payload_verified` hard guard, and its bid declares EMPTY; a malicious slot-N+1 proposer could declare FULL nevertheless, but **G-BlockAdmit** rejects that block at every honest super-majority node. So no canonical successor declares $B$ FULL — equivalently, $\texttt{bid}(B).\texttt{block\\_hash}$ is not in the payload hash chain.
+*Contrapositive (unavailability ⟹ hash not on chain):* if either the payload or the sampled blob data is unavailable to the honest super-majority, then no honest super-majority node populates `store.payloads[B.root]`; by **G-Struct**, the `(B, \mathrm{FULL})` node is absent from those nodes' fork-choice trees; the honest slot-N+1 proposer's `should_extend_payload(B)` fails at the `is_payload_verified` hard guard, and its bid declares EMPTY; a malicious slot-N+1 proposer could declare FULL nevertheless, but **G-BlockAdmit** rejects that block at every honest super-majority node. So no canonical successor declares $B$ FULL — equivalently, `bid(B).block_hash` is not in the payload hash chain.
 
 *Assumptions used:* **S2**, **S4** (honest slot-N+1 super-majority + honest slot-N+1 proposer), **G-Struct**, **G-BlockAdmit**. **A4** (honest PTC) is consistent with this picture but not load-bearing — the structural argument routes through `on_block` and `on_execution_payload_envelope`, not the PTC tiebreaker.
 
