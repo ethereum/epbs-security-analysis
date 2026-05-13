@@ -113,15 +113,15 @@ The two pointers reference different parents whenever a payload was withheld in 
 
 With the two-pointer structure in place, we can give a precise on-chain definition:
 
-> **Definition (FULL / EMPTY on chain).** A canonical block B is **FULL on chain** if some subsequent canonical block C has `bid_C.parent_block_hash == bid_B.block_hash`. Otherwise B is **EMPTY on chain**.
+> **Definition (FULL / EMPTY on chain).** A canonical block `B` is **FULL on chain** if its child `C` has `bid_C.parent_block_hash == bid_B.block_hash`. Otherwise B is **EMPTY on chain**.
 
-**The intuition.** Block B's builder committed to a payload with hash `bid_B.block_hash`. If a later canonical block C built its execution payload on top of that hash — i.e., C's `parent_block_hash` matches B's promise — then B's payload was delivered, validated by C's builder, and is now woven into the execution chain. If no subsequent canonical block matched B's promise, the chain treats B's slot as if no payload happened.
+**The intuition.** Block B's builder committed to a payload with hash `bid_B.block_hash`. If its child C builds its execution payload on top of that hash — i.e., C's `parent_block_hash` matches B's bid — then B's payload was delivered, validated by C's proposer and builder, and is now woven into the execution chain. If no subsequent canonical block matched B's bid, the chain treats B's slot as if no payload happened.
 
 **This definition is observable from on-chain data alone.** A reader with access to the canonical chain's blocks computes B's FULL/EMPTY status by inspecting the next canonical block's `bid.parent_block_hash` field — no node-internal state needed.
 
 **Two structural facts to keep in mind:**
 
-- **FULL/EMPTY is *retrospective*.** B's status is decided at slot N+1 (or later) by the next canonical block's declaration, not at B's own slot. At slot N, B's payload is in flight; until a subsequent block commits to building on it, B's on-chain status is unsettled.
+- **FULL/EMPTY is *retrospective*.** B's status is decided at slot N+1 (or later) by B's child, not by B itself at slot N. At slot N, B's payload is in flight; until a subsequent block commits to building on it, B's payload on-chain status is unsettled.
 - **"On chain" means "canonical".** FULL/EMPTY is a property of the canonical chain. Off-chain forks have their own structure, but only the canonical branch's verdict is externally observable as protocol behaviour.
 
 Throughout this document we use **FULL** and **EMPTY** in this on-chain sense — comparing successor `bid.parent_block_hash` to predecessor `bid.block_hash` — until §5 Phase 5, where we describe the fork-choice rule and introduce a richer node-based vocabulary that the fork-choice traversal uses internally.
@@ -137,36 +137,35 @@ Throughout this document we use **FULL** and **EMPTY** in this on-chain sense �
 
 **Both halves are required for chain inclusion.** When slot N+1's `should_extend_payload` decides whether to favour FULL for block B, it requires PTC majority on both — `is_payload_timely` AND `is_payload_data_available`. If either fails (and no proposer-side fallback fires), no subsequent block declares B FULL and B is EMPTY on chain.
 
-This is the foundation of Property P5 (Data availability for chain inclusion) below.
+This is the foundation of Property P4 (Data availability for chain inclusion) below.
 
 ---
 
 ## 4. Properties
 
-> **TL;DR.** Five properties P1–P5 capture the externally observable guarantees of ePBS — claims an observer with full visibility of network messages and on-chain state can verify, without inspecting any node's internal state. P1–P2 govern payment; P3–P4 protect the builder; P5 ties chain inclusion to data availability. All five hold under β < 20% per committee
+> **TL;DR.** Four properties P1–P4 capture the externally observable guarantees of ePBS — claims an observer with full visibility of network messages and on-chain state can verify, without inspecting any node's internal state. P1 protect the proposer; P2–P3 protect the builder; P4 ties chain inclusion to data availability. All five hold under β < 20% per committee
 
 Each property is stated here informally and revisited precisely as we walk through the lifecycle. Each is backed by lemmas in the companion formal treatment.
 
-**P1: Unconditional payment to the proposer.** If the proposer's beacon block is widely attested, the proposer receives the builder's bid regardless of whether the builder reveals the payload. The builder cannot commit to a bid and then avoid paying.
+**P1: Unconditional payment to the proposer.** If beacon block including a valid bid is proposed in a timely fashion, the bid amount is transferred from the builder to the proposer's fee recipient within at most two epochs after the bid's slot. The builder cannot commit to a bid and then avoid paying.
 
-**P2: Builder payment enforcement.** Under honest proposer and honest PTC majority, when a builder's bid is selected and recorded on chain, the bid amount is transferred from the builder to the proposer's fee recipient within at most two epochs after the bid's slot — once at the next block when the builder reveals, or by the end of the following epoch otherwise. The payment is single (no double-charge) and bounded in time.
+**P2: Builder revealing protection.** If an honest builder reveals, then its payload will be included in the canonical chain.
 
-**P3: Builder revealing protection.** If an honest builder reveals its payload, the block carrying the builder's bid remains on the canonical chain — the block is not reorged out.
+**P3: Builder withholding protection.** An honest builder that withholds its payload is not charged, and the proposer is not paid. The voting threshold required to charge a withholding builder cannot be reached by Byzantine validators alone; it requires honest participation that, by hypothesis of honest withholding, is absent.
 
-**P4: Builder withholding protection.** An honest builder that withholds its payload is not charged, and the proposer is not paid. The voting threshold required to charge a withholding builder cannot be reached by Byzantine validators alone; it requires honest participation that, by hypothesis of honest withholding, is absent.
+**P4: Data availability for chain inclusion.** A payload is part of the canonical chain only if its data is available.
 
-**P5: Data availability for chain inclusion.** A payload is part of the canonical chain if and only if both its execution payload envelope and its blob data were delivered. Equivalently: if either the envelope or the blob data is missing, no subsequent canonical block builds on the payload, and it remains EMPTY on chain.
-
-These five are the **externally checkable** guarantees: each can in principle be detected by an observer who sees only the network's messages and the on-chain state. The rest of this section discusses the fee-recipient destination and the adversarial model that the proofs rely on.
+These four are the **externally checkable** guarantees: each can in principle be detected by an observer who sees only the network's messages and the on-chain state. The rest of this section discusses the fee-recipient destination and the adversarial model that the proofs rely on.
 
 **Why the fee recipient and not the validator's balance.** *The bid is paid to the proposer's `fee_recipient` (an execution-layer address) rather than added to the validator's consensus-layer balance.* This follows the same convention used pre-ePBS for execution-layer fees: staking pools and similar operators rely on this separation because keeping consensus rewards apart from execution-layer revenue makes accounting and revenue distribution to delegators much simpler. Under ePBS, the only difference is *who* drives the credit (the builder, via `BuilderPendingWithdrawal`) — the destination address remains the same.
 
-**Adversarial model.** Properties P1–P5 hold under the following calibration:
+**Adversarial model.** Properties P1–P4 hold under the following calibration:
 
-- **Byzantine bound.** β < 20% per committee — the Byzantine fraction in any slot's committee is less than 20% of the committee weight.
+- **Committee Byzantine bound.** β < 20% per committee — the Byzantine fraction in any slot's committee is less than 20% of the committee weight.
+- **PTC Byzantine bound.** The Byzantine fraction of the PTC committee in any slot is less than 50% of the PTC.
 - **Where the formal proofs live.** The full adversarial analysis — proposer equivocation, parameter relationships, all lemmas — is in the [formal treatment](https://github.com/ethereum/epbs-security-analysis/blob/formal-treatment/ePBS-pseudocode.md) (on the `formal-treatment` branch). §7 below summarizes the key scenarios.
 
-The remainder of this document shows how the protocol's algorithms enforce each of P1–P5.
+The remainder of this document shows how the protocol's algorithms enforce each of P1–P4.
 
 ---
 
