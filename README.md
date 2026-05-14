@@ -192,13 +192,173 @@ This is the foundation of Property P4 (Data availability for chain inclusion) be
 
 Each property is stated here informally and revisited precisely as we walk through the lifecycle. Each is backed by lemmas in the companion formal treatment.
 
+Each property below is also given as a pair of Python-style predicates — `Hypothesis(...)` and `Conclusion(...)` — written against the spec types (containers, fields, helpers from `consensus-specs/specs/gloas/`). The narrative statement is the readable form; the predicates are the form a verification tool (Coq, Dafny, K, …) would consume. The predicates reference helpers introduced in §3 (`block_status`, `child`, payload-hash-chain membership) and the spec's `Store`, `BeaconState`, `BeaconBlock`, `ExecutionPayloadBid` containers verbatim.
+
 **P1: Unconditional payment to the proposer.** If beacon block including a valid bid is proposed in a timely fashion, the bid amount is transferred from the builder to the proposer's fee recipient within at most two epochs after the bid's slot. The builder cannot commit to a bid and then avoid paying.
+
+<details>
+<summary><b>Pseudocode definition</b> (click to expand)</summary>
+
+```python
+# P1: Unconditional payment to proposer
+#
+# Hypothesis: at slot N, beacon block B was admitted by process_block (no
+#   assertion failure in process_execution_payload_bid), and B is canonical at
+#   slot N+1 (it accumulated enough honest attestation weight to stay head).
+# Conclusion: at some point during epochs e..e+1 (where e = epoch_of(N)), a
+#   BuilderPendingWithdrawal carrying (bid.value, proposer's fee_recipient,
+#   bid.builder_index) was appended — either by Path A (slot N+1's
+#   apply_parent_execution_payload via settle_builder_payment) or by Path B
+#   (epoch-boundary process_builder_pending_payments under ≥60% quorum).
+
+def P1_hypothesis(state_at_N: BeaconState, B: BeaconBlock,
+                  B_is_canonical: bool) -> bool:
+    """B at slot N includes an admissible bid; B is canonical at slot N+1."""
+    bid = B.body.signed_execution_payload_bid.message
+    return (
+        bid.slot == B.slot
+        and is_active_builder(state_at_N, bid.builder_index)
+        and can_builder_cover_bid(state_at_N, bid.builder_index, bid.value)
+        and B_is_canonical
+        # B_is_canonical is a fork-choice fact discharged from S1+S2+A6.
+    )
+
+def P1_conclusion(withdrawals_appended_during_e_to_e_plus_1: Sequence[BuilderPendingWithdrawal],
+                  bid: ExecutionPayloadBid,
+                  proposer_fee_recipient: ExecutionAddress) -> bool:
+    """A BuilderPendingWithdrawal for the bid was appended within the 2-epoch window."""
+    return any(
+        w.amount == bid.value
+        and w.fee_recipient == proposer_fee_recipient
+        and w.builder_index == bid.builder_index
+        for w in withdrawals_appended_during_e_to_e_plus_1
+    )
+    # NOTE: this is a trace predicate over appended entries — a verifier with
+    # full trace access checks it directly; a snapshot-only verifier would
+    # need an auxiliary ghost variable to log appends.
+```
+
+</details>
 
 **P2: Builder revealing protection.** If an honest builder reveals, then its `bid.block_hash` is in the payload hash chain of the canonical beacon chain — equivalently, the block carrying its bid is FULL on chain (and by P4 below, the corresponding payload and blob data are available + valid).
 
+<details>
+<summary><b>Pseudocode definition</b> (click to expand)</summary>
+
+```python
+# P2: Builder revealing protection
+#
+# Hypothesis: an honest builder revealed the execution payload for canonical
+#   block B at slot N — i.e., broadcast a SignedExecutionPayloadEnvelope whose
+#   payload.block_hash == bid(B).block_hash, with blob data delivered (passes
+#   is_data_available). The honest super-majority observed both.
+# Conclusion: B is FULL on the canonical chain — bid(B).block_hash is in the
+#   payload hash chain (§3 Definition).
+
+def P2_hypothesis(canonical: Sequence[BeaconBlock], B: BeaconBlock,
+                  store_at_honest_node: Store) -> bool:
+    """Honest builder revealed B's payload; envelope + blob data delivered to honest nodes."""
+    bid = B.body.signed_execution_payload_bid.message
+    return (
+        B in canonical
+        and hash_tree_root(B) in store_at_honest_node.payloads
+        and store_at_honest_node.payloads[hash_tree_root(B)].payload.block_hash == bid.block_hash
+        and is_payload_verified(store_at_honest_node, hash_tree_root(B))
+        and is_data_available(hash_tree_root(B))
+    )
+
+def P2_conclusion(canonical: Sequence[BeaconBlock], B: BeaconBlock) -> bool:
+    """B is FULL on canonical — bid(B).block_hash belongs to the payload hash chain."""
+    return block_status(canonical, B) == FULL  # see §3 Definition (Block status)
+```
+
+</details>
+
 **P3: Builder withholding protection.** An honest builder that withholds its execution payload is not charged, and the proposer is not paid.
 
+<details>
+<summary><b>Pseudocode definition</b> (click to expand)</summary>
+
+```python
+# P3: Builder withholding protection
+#
+# Hypothesis: at slot N, beacon block B carries the bid of an honest builder
+#   who withheld the payload (Assumption A6 / H7 conditions failed); the
+#   BuilderPendingPayment weight, evaluated immediately before
+#   process_builder_pending_payments runs at the end of epoch e+1, is below
+#   the quorum threshold.
+# Conclusion: no BuilderPendingWithdrawal carrying (bid.value, bid.builder_index)
+#   was appended during epochs e..e+1 — the BuilderPendingPayment is discarded
+#   by process_builder_pending_payments rather than paid out.
+
+def P3_hypothesis(state_just_before_epoch_boundary: BeaconState,
+                  B: BeaconBlock,
+                  builder_revealed: bool) -> bool:
+    """Honest builder withheld; the accumulated weight at the epoch boundary is
+    below the quorum threshold (this is where process_builder_pending_payments
+    reads it)."""
+    bid = B.body.signed_execution_payload_bid.message
+    idx = bid.slot % (2 * SLOTS_PER_EPOCH)
+    payment = state_just_before_epoch_boundary.builder_pending_payments[idx]
+    quorum = get_builder_payment_quorum_threshold(state_just_before_epoch_boundary)
+    return (
+        not builder_revealed                                  # H7 / A6
+        and is_active_builder(state_just_before_epoch_boundary, bid.builder_index)
+        and payment.weight < quorum                           # quorum not met at evaluation
+    )
+
+def P3_conclusion(withdrawals_appended_during_e_to_e_plus_1: Sequence[BuilderPendingWithdrawal],
+                  bid: ExecutionPayloadBid) -> bool:
+    """No BuilderPendingWithdrawal carrying this bid was appended during the 2-epoch window."""
+    return not any(
+        w.builder_index == bid.builder_index and w.amount == bid.value
+        for w in withdrawals_appended_during_e_to_e_plus_1
+    )
+    # NOTE: this is a trace predicate — a verifier with full trace access checks
+    # it directly; a snapshot-only verifier would track appends via a ghost
+    # variable. The "no withdrawal" claim is logically stronger than just
+    # "BuilderPendingPayment.withdrawal.amount == 0 at end of e+1" because the
+    # latter is also true when Path B *paid out* (which would violate P3).
+```
+
+</details>
+
 **P4: Data availability for chain inclusion.** If a payload hash is in the payload hash chain of the canonical beacon chain (i.e., the hash is on chain in the §3 sense), then the corresponding execution payload is available and valid, and its associated blob data is also available.
+
+<details>
+<summary><b>Pseudocode definition</b> (click to expand)</summary>
+
+```python
+# P4: Data availability for chain inclusion
+#
+# Hypothesis: a payload hash h belongs to the payload hash chain of the
+#   canonical beacon chain (§3 Definition). Equivalently, there exists a
+#   non-head canonical block B* with bid(B*).block_hash == h AND
+#   block_status(canonical, B*) == FULL.
+# Conclusion: at every honest super-majority node, the execution payload with
+#   block_hash == h is in store.payloads, has passed verification, and its
+#   associated blob data passed data-availability sampling.
+
+def P4_hypothesis(canonical: Sequence[BeaconBlock], h: Hash32) -> Tuple[bool, Optional[BeaconBlock]]:
+    """h is in the payload hash chain. Return (True, B*) on witness; (False, None) otherwise."""
+    for B in canonical:
+        bid = B.body.signed_execution_payload_bid.message
+        if bid.block_hash == h and block_status(canonical, B) == FULL:
+            return True, B
+    return False, None
+
+def P4_conclusion(store_at_honest_node: Store, h: Hash32, B_star: BeaconBlock) -> bool:
+    """Payload available + verified at honest super-majority; blob data available."""
+    r = hash_tree_root(B_star)
+    return (
+        r in store_at_honest_node.payloads
+        and store_at_honest_node.payloads[r].payload.block_hash == h
+        and is_payload_verified(store_at_honest_node, r)
+        and is_data_available(r)
+    )
+```
+
+</details>
 
 These four are the **externally checkable** guarantees: each can in principle be detected by an observer who sees only the network's messages and the on-chain state. The rest of this section discusses the fee-recipient destination and the adversarial model that the proofs rely on.
 
