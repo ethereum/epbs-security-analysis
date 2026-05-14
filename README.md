@@ -207,6 +207,8 @@ These four are the **externally checkable** guarantees: each can in principle be
 
 **Adversarial model.** Properties P1–P4 hold under the structural assumptions catalogued in §8.1: network synchrony (S1, Δ < T_att), a per-committee Byzantine bound of β < 20% (S2), and a PTC Byzantine bound < 50% (S3). Some properties additionally invoke per-instance honesty hypotheses (e.g., "honest slot-N+1 proposer") stated in the claim itself; these are formalised as S4 in §8.
 
+**Strengthening assumption for P1 and P2.** P1 and P2 additionally rely on a strengthening hypothesis — that parent(B) remains canonical at every honest validator throughout the trace — which closes a residual gap against split-vote reorgs (a Byzantine slot-N proposer publishing the block late enough to fragment honest attestations, so that some honest validators vote on a sibling branch of parent(B) instead of on B). The assumption is formalised in §8.4 as `parent_remains_canonical(trace, B)`, and the Note at the end of §8.4 documents the open work to weaken it (either by tightening the cautious-reveal threshold in A6 or by adding an explicit "block was timely" precondition to the builder's reveal decision).
+
 The remainder of this document shows how the protocol's algorithms enforce each of P1–P4. §7 walks through the adversarial scenarios; §8 provides the formal-verification contract — a self-contained set of assumptions that, combined with the code in §5–§6, suffices to prove all four properties. The companion [formal treatment](https://github.com/ethereum/epbs-security-analysis/blob/formal-treatment/ePBS-pseudocode.md) discharges every §8 assumption as a lemma.
 
 ---
