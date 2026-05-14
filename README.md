@@ -8,7 +8,7 @@ This document is the first part of a security analysis of ePBS. We walk through 
 
 **Who should read this.** Anyone who wants a rigorous but readable account of how ePBS works: what changed from pre-ePBS, why, and what guarantees the protocol provides. We assume familiarity with Ethereum's consensus layer (Gasper, LMD-GHOST, FFG, attestation committees, fork choice). We do not assume prior knowledge of EIP-7732.
 
-**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`792a8b0`](https://github.com/ethereum/consensus-specs/commit/792a8b0), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/master/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
+**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`fa8bb08`](https://github.com/ethereum/consensus-specs/commit/fa8bb08), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/master/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
 
 **Notation.** Code blocks use Python syntax at an abstracted level. An `...` in arguments or fields means "additional fields omitted for brevity." One convention is worth knowing upfront; the rest are reference material in the expandable table below.
 
@@ -41,7 +41,7 @@ Every name below is a pedagogical helper, not a spec function. Each one abstract
 | Name                                                                                                  | Spec source                                                                                                                                                                                                                                                                                                                                                                                |
 | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `slot(B)`, `parent(B)`, `state(B)`                                                              | "the slot of block B", "the parent block of B", "the post-state of B" — i.e.,`B.slot`, `store.blocks[B.parent_root]`, and `store.block_states[hash_tree_root(B)]` respectively.                                                                                                                                                                                                     |
-| `bid(B)`, `head(chain)`                                                                           | "the bid carried by block B" —`B.body.signed_execution_payload_bid.message` (so `bid(B).block_hash`, `bid(B).parent_block_hash`, etc. are the corresponding fields of the `ExecutionPayloadBid` SSZ container). `head(chain)` is the head block of a canonical chain — the latest block in the sequence.                                                                       |
+| `bid(B)`, `head(chain)`, `child(chain, B)`                                                                           | "the bid carried by block B" —`B.body.signed_execution_payload_bid.message` (so `bid(B).block_hash`, `bid(B).parent_block_hash`, etc. are the corresponding fields of the `ExecutionPayloadBid` SSZ container). `head(chain)` is the head block of a canonical chain — the latest block in the sequence. `child(chain, B)` is B's unique canonical child on `chain` (the block whose `parent_root` equals B's hash-tree root); defined formally in §3.                                                                       |
 | `block_status(chain, B)`, `parentStatus(B)`                                                       | `block_status(chain, B)` is the FULL / EMPTY / undefined classifier defined in §3. `parentStatus(B)` is shorthand for "B's bid declares its parent as FULL or EMPTY" — i.e., FULL if `bid(B).parent_block_hash == state.latest_execution_payload_bid.block_hash` at B's processing time, EMPTY otherwise. Used in §7 / §8 to refer to a block's *declared* view of its parent. |
 | `active_validators(store)`, `latest_message(v)`, `effective_balance(v)`, `child_blocks_of(r)` | Pedagogical helpers in the §8 G-assumption sketches; abbreviate `get_active_validator_indices(state, get_current_epoch(state))`, `store.latest_messages[v]`, `state.validators[v].effective_balance`, and the children-of-`r` filter that `get_node_children` (`fork-choice.md` line 534) applies, respectively.                                                              |
 
@@ -84,7 +84,7 @@ ePBS introduces one new actor and modifies the role of existing ones.
 - **Not slashable.** Unlike validators, builders are not slashable: there is no `process_builder_slashing` handler. The protocol enforces accountability solely through *bid forfeit* — the `BuilderPendingPayment` IOU clears against the builder's stake at the epoch boundary even when the builder withholds, provided the beacon block reaches the 60% quorum (Path B, Lemmas 29–30 in the [formal treatment](https://github.com/ethereum/epbs-security-analysis/blob/formal-treatment/ePBS-pseudocode.md)).
 - **Exit.** Builders may voluntarily exit (via `process_voluntary_exit`, which uses the bitwise `BUILDER_INDEX_FLAG` to distinguish builder indices from validator indices in the same wire format). There is no misbehaviour-driven exit — accountability is purely economic.
 
-**PTC member** — *new role for existing validators*. A subcommittee of 512 validators per slot, selected from the slot's regular attestation committees. Key properties:
+**PTC member** — *new role for existing validators*. A subcommittee of 512 ballot positions per slot, sampled from the slot's regular attestation committees by effective balance (a high-balance validator may occupy multiple positions; the >256-True threshold counts ballot positions, not distinct validators). Key properties:
 
 - **PTC members are themselves attesters for the slot.** Every PTC member also belongs to one of the slot's attestation committees and casts the standard same-slot attestation at $T_{\mathrm{att}}$ in addition to the PTC witness statement at $T_{\mathrm{ptc}}$. Throughout this document and in the figures we draw the PTC as a separate column from Attesters — this is a *pedagogical* separation, not a mechanical one, isolating the witness-statement duty (a binary observation about payload arrival) from the head-vote duty (which drives fork-choice weight).
 - **Distinct duty.** The PTC casts a **payload timeliness attestation** at 75% of the slot, reporting whether the member observed the `SignedExecutionPayloadEnvelope` arrive. The spec object is a `PayloadAttestationMessage` ([`beacon-chain.md`](https://github.com/ethereum/consensus-specs/blob/master/specs/gloas/beacon-chain.md)); we follow the PBS literature and use the shorthand **witness statement** (or **witness vote**) — the PTC is *witnessing* payload arrival, not judging payload validity.
@@ -103,7 +103,7 @@ ePBS introduces one new actor and modifies the role of existing ones.
 - **`parent_root`** — the hash tree root of the previous beacon block. This is the **consensus parent**: the consensus chain is the sequence of beacon blocks linked by `parent_root`. It advances every slot a block is proposed (gaps only for missed slots).
 - **`bid.parent_block_hash`** — the `block_hash` of the most recent revealed execution payload that the bid references as its parent. This is the **execution parent**: the execution chain is the sequence of execution payloads linked by `parent_block_hash`. It advances only at slots whose builder actually revealed an execution payload.
 
-The two pointers reference different parents whenever an execution payload was withheld in between.
+The two pointers point at different objects by design — `parent_root` is a beacon-block root, `bid.parent_block_hash` is an execution-payload `block_hash`. What can vary is the *slot* they correspond to: if every intervening builder revealed, both point at the immediately preceding slot; whenever a builder withheld in between, the execution parent is from an earlier slot than the consensus parent (the execution chain skips withheld slots, the consensus chain does not).
 
 ![Two-chain structure](figures/fig-two-chains-v14.png)
 
@@ -133,12 +133,13 @@ We now define formally what it means for a block to be **FULL** or **EMPTY**.
 
 *Notation reminder.* In the definitions below, `bid(X)` denotes the bid carried by block $X$ — the `ExecutionPayloadBid` message inside `X.body.signed_execution_payload_bid`. Its fields are accessed with the usual dot syntax: `bid(X).block_hash`, `bid(X).parent_block_hash`, etc. (See the abstractions table at the top of the doc for the full set of pedagogical helpers.)
 
-> **Definition (Block status).** For a non-head block $B$ on a canonical beacon chain $\mathit{chain}$, let $C$ denote $B$'s child in $\mathit{chain}$ (the unique canonical block whose `parent_root` equals $B$'s hash-tree root). Then:
+> **Definition (Block status).** Write $B \prec \mathit{chain}$ to mean "$B$ is a non-head canonical block on $\mathit{chain}$", and let `child(chain, B)` denote $B$'s unique canonical child on $\mathit{chain}$ (the block whose `parent_root` equals $B$'s hash-tree root). Then `block_status(chain, B)` is:
 >
-> - `block_status(chain, B)` is **FULL** if `bid(C).parent_block_hash` equals `bid(B).block_hash`;
-> - `block_status(chain, B)` is **EMPTY** otherwise.
+> - **FULL** if $B \prec \mathit{chain}$ and `bid(child(chain, B)).parent_block_hash` equals `bid(B).block_hash`;
+> - **EMPTY** if $B \prec \mathit{chain}$ and `bid(child(chain, B)).parent_block_hash` does not equal `bid(B).block_hash`;
+> - **undefined** otherwise (i.e., $B$ is not on $\mathit{chain}$, or $B = \mathit{head}(\mathit{chain})$).
 >
-> When $B$ is the head of `chain`, `block_status` is **undefined** — $B$'s `bid.block_hash` has been committed but no child exists yet to reference it. Status becomes defined once $B$'s child lands.
+> **Why undefined at the head.** When $B = \mathit{head}(\mathit{chain})$, $B$'s `bid.block_hash` has been committed but no child exists yet to reference it. Status becomes defined once $B$'s child lands.
 
 **Why the function takes the chain as an argument.** FULL/EMPTY is not an intrinsic property of $B$. The definition depends on $B$'s **child** in $\mathit{chain}$ — and the child is a property of the chain, not of $B$. A reorg that replaces $B$'s child can flip $B$'s status without $B$ changing. The explicit `chain` argument is a structural reminder that status is meaningful only relative to a fixed canonical branch.
 
@@ -154,13 +155,17 @@ Throughout this document, when we say "$B$ is FULL on chain" without qualificati
 
 Block statuses on the canonical chain induce a chain over payload hashes. This is the formal object that captures *which payload hashes are on chain*.
 
-> **Definition (Payload hash chain).** Given a head beacon block $B$ on the canonical chain, the **payload hash chain** is the sequence of payload hashes $h^{(0)}, h^{(1)}, h^{(2)}, \ldots$ defined by:
+> **Definition (Payload hash chain).** The **payload hash chain** is the collection of `bid.block_hash` values committed by every FULL block on the canonical chain, inheriting the canonical chain's order. Equivalently, a payload hash $h$ belongs to the payload hash chain if and only if there exists a non-head canonical block $B^*$ such that $B^*$'s `bid.block_hash` equals $h$ AND $B^*$ is **FULL** on the canonical chain.
 >
-> - **Base case.** $h^{(0)}$ is $B$'s `bid.parent_block_hash` — the hash of the latest confirmed execution payload (the one referenced by $B$'s bid as its parent).
-> - **Recurrence (for each $k \geq 0$).** Let $B^{(k)}$ be the unique canonical ancestor of $B$ whose `bid.block_hash` equals $h^{(k)}$ — i.e., $B^{(k)}$ itself is the block whose bid committed to the payload with hash $h^{(k)}$. Then set $h^{(k+1)}$ to $B^{(k)}$'s `bid.parent_block_hash`.
-> - **Termination.** The recurrence stops when no such $B^{(k)}$ exists — i.e., when $h^{(k)}$ corresponds to a payload at or before genesis (or the slot before ePBS activation).
+> (FULL is undefined at the head, so the head's `bid.block_hash` is *not* on chain — it only enters once a successor lands.)
 
-**Equivalent characterization.** A payload hash $h$ belongs to the payload hash chain if and only if there exists a non-head canonical block $B^*$ such that $B^*$'s `bid.block_hash` equals $h$ AND $B^*$ is **FULL** on the canonical chain. In other words, **the payload hash chain is the sequence of `bid.block_hash` values from every FULL block on the canonical chain** (FULL is undefined at the head, so the head's `bid.block_hash` is *not* on chain — it only enters once a successor lands), ordered from head back to genesis.
+**Inductive construction (head-to-genesis).** Given a head beacon block $B$ on the canonical chain, the payload hash chain can be enumerated by walking backwards from $B$. Let $h^{(0)}, h^{(1)}, h^{(2)}, \ldots$ be the sequence defined by:
+
+- **Base case.** $h^{(0)}$ is $B$'s `bid.parent_block_hash` — the hash of the latest confirmed execution payload (the one referenced by $B$'s bid as its parent).
+- **Recurrence (for each $k \geq 0$).** Let $B^{(k)}$ be the unique canonical ancestor of $B$ whose `bid.block_hash` equals $h^{(k)}$ — i.e., $B^{(k)}$ itself is the block whose bid committed to the payload with hash $h^{(k)}$. Then set $h^{(k+1)}$ to $B^{(k)}$'s `bid.parent_block_hash`.
+- **Termination.** The recurrence stops when no such $B^{(k)}$ exists — i.e., when $h^{(k)}$ corresponds to a payload at or before genesis (or the slot before ePBS activation).
+
+This enumeration produces the chain in *reverse* execution order (head-to-genesis): $h^{(0)}$ is the most recent, $h^{(k)}$ gets older as $k$ grows.
 
 > **Definition (Payload hash on chain).** A payload hash $h$ is **on chain** if it belongs to the payload hash chain of the canonical beacon chain at the time of inspection.
 
@@ -191,7 +196,7 @@ Each property is stated here informally and revisited precisely as we walk throu
 
 **P2: Builder revealing protection.** If an honest builder reveals, then its `bid.block_hash` is in the payload hash chain of the canonical beacon chain — equivalently, the block carrying its bid is FULL on chain (and by P4 below, the corresponding payload and blob data are available + valid).
 
-**P3: Builder withholding protection.** An honest builder that withholds its execution payload is not charged, and the proposer is not paid. The voting threshold required to charge a withholding builder cannot be reached by Byzantine validators alone; it requires honest participation that, by hypothesis of honest withholding, is absent.
+**P3: Builder withholding protection.** An honest builder that withholds its execution payload is not charged, and the proposer is not paid.
 
 **P4: Data availability for chain inclusion.** If a payload hash is in the payload hash chain of the canonical beacon chain (i.e., the hash is on chain in the §3 sense), then the corresponding execution payload is available and valid, and its associated blob data is also available.
 
@@ -767,7 +772,7 @@ The rows highlighted as the "only successful attack" and "no builder payment" ca
 
 #### Setup
 
-**Suppose at slot 100 the builder reveals a valid execution payload for block B.** All honest nodes validate it and populate `store.payloads[B.root]`. A malicious PTC majority (at least 256 of 512 members) votes `payload_present = False`, and the slot 101 proposer colludes by declaring `parentStatus = EMPTY`. (The threshold is 256 because `is_payload_timely` returns True only when `sum(True votes) > PAYLOAD_TIMELY_THRESHOLD = 256`; equivalently, the check fails when `sum(True votes) ≤ 256`, which obtains as soon as at least 256 of the 512 votes are False.)
+**Suppose at slot 100 the builder reveals a valid execution payload for block B.** All honest nodes validate it and populate `store.payloads[B.root]`. A malicious PTC majority (at least 256 of 512 members) votes `payload_present = False`, and the slot 101 proposer colludes by declaring `parentStatus = EMPTY`. (The threshold is 256 because `is_payload_timely` returns True only when `sum(True votes) > PAYLOAD_TIMELY_THRESHOLD = 256`; equivalently, the check fails when `sum(True votes) ≤ 256`, which obtains as soon as at least 256 of the 512 votes are non-True (False or absent).)
 
 #### The honest builder for slot 101
 
