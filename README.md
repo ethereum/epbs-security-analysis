@@ -192,7 +192,92 @@ This is the foundation of Property P4 (Data availability for chain inclusion) be
 
 Each property is stated here informally and revisited precisely as we walk through the lifecycle. Each is backed by lemmas in the companion formal treatment.
 
-Each property below is also given as a pair of Python-style predicates — `Hypothesis(...)` and `Conclusion(...)` — written against the spec types (containers, fields, helpers from `consensus-specs/specs/gloas/`). The narrative statement is the readable form; the predicates are the form a verification tool (Coq, Dafny, K, …) would consume. The predicates reference helpers introduced in §3 (`block_status`, `child`, payload-hash-chain membership) and the spec's `Store`, `BeaconState`, `BeaconBlock`, `ExecutionPayloadBid` containers verbatim.
+Each property below is also given as a single Python-style predicate `P_i(trace, ...)` that returns `Hypothesis(trace, ...) ⟹ Conclusion(trace, ...)`, where `Hypothesis` and `Conclusion` are named sub-predicates. The narrative statement is the readable form; the predicates are the form a verification tool (Coq, Dafny, K, …) would consume. They quantify over an *honest-view trace* — a sequence of honest-actor broadcast events paired with the resulting honest state — defined in the expandable block below. The predicates reference helpers introduced in §3 (`block_status`, `child`, payload-hash-chain membership) and the spec's `Store`, `BeaconState`, `BeaconBlock`, `ExecutionPayloadBid` containers verbatim.
+
+<details>
+<summary><b>Trace, actor, and event types</b> (click to expand)</summary>
+
+```python
+# Actor as a variant (sum) type - the Python analogue of a Dafny
+# `datatype Actor = ValidatorActor(...) | BuilderActor(...)`. Each
+# variant carries the spec's existing role-specific index type, so the
+# type system itself enforces the role-index pairing; no flag bit or
+# enum discriminator is needed.
+@dataclass(frozen=True)
+class ValidatorActor:
+    index: ValidatorIndex                  # from consensus-specs
+
+@dataclass(frozen=True)
+class BuilderActor:
+    index: BuilderIndex                    # from consensus-specs
+
+Actor = Union[ValidatorActor, BuilderActor]
+
+# Messages broadcast by honest actors on the gossip network.
+Message = Union[
+    SignedBeaconBlock,                  # validator (proposer)
+    SignedExecutionPayloadBid,          # builder
+    SignedExecutionPayloadEnvelope,     # builder
+    Attestation,                        # validator (attester)
+    PayloadAttestationMessage,          # validator (PTC member)
+]
+
+# A builder's local state - what submit_bid / reveal_payload in §5 Phase 0
+# and Phase 3 read and write, plus the observations A6 cautious-reveal
+# consults. Builders have no fork-choice Store; they observe the network
+# directly.
+@dataclass
+class BuilderState:
+    stored_payload:         Optional[ExecutionPayload]           # set in submit_bid, reused in reveal_payload (A1)
+    stored_requests:        Optional[ExecutionRequests]
+    observed_blocks:        Mapping[Root, SignedBeaconBlock]     # for is_head_of_chain (A5)
+    observed_attestations:  Sequence[Attestation]                # for A6(ii) - >=40% real weight check
+    observed_equivocations: Set[Tuple[ValidatorIndex, Slot]]     # for A6(iii) - equivocation visibility
+
+# An event is a single honest-actor broadcast. Byzantine broadcasts are
+# OUTSIDE the trace - we model only what honest actors emit. Their effects
+# on honest stores show up in subsequent steps (delivered to recipients
+# under synchrony S1).
+@dataclass
+class Event:
+    time: float                         # absolute time (seconds since genesis)
+    actor: Actor                        # honest broadcaster - role-tagged
+    message: Message
+
+# A trace step: the broadcast event plus the resulting honest state.
+# Two dicts at the top level - validators and builders have different
+# state types (Store vs BuilderState).
+@dataclass
+class TraceStep:
+    event: Event
+    validator_stores: Mapping[ValidatorIndex, Store]         # honest validators
+    builder_states:   Mapping[BuilderIndex, BuilderState]    # honest builders
+
+Trace = Sequence[TraceStep]             # in nondecreasing event.time order
+
+# Step lookup at an arbitrary time. State changes only at event times, so
+# step_at(trace, t) returns the latest step with event.time <= t.
+def step_at(trace: Trace, t: float) -> TraceStep:
+    candidates = [s for s in trace if s.event.time <= t]
+    if not candidates:
+        return initial_step(trace)
+    return max(candidates, key=lambda s: s.event.time)
+
+# An actor is honest IN A TRACE if every event with this actor follows
+# the spec - the @Upon validator handlers in §5 for ValidatorActor, the
+# @Upon builder handlers (submit_bid, reveal_payload) plus A1/A5/A6 for
+# BuilderActor. Trace-level predicate, not intrinsic to the actor itself.
+def is_honest(actor: Actor, trace: Trace) -> bool: ...
+
+# Per-validator canonical chain - get_head walked back to genesis.
+def honest_canonical(store: Store) -> Sequence[BeaconBlock]: ...
+
+# Logical implication, used to keep the top-level predicates readable.
+def implies(p: bool, q: bool) -> bool:
+    return (not p) or q
+```
+
+</details>
 
 **P1: Unconditional payment to the proposer.** If beacon block including a valid bid is proposed in a timely fashion, the bid amount is transferred from the builder to the proposer's fee recipient within at most two epochs after the bid's slot. The builder cannot commit to a bid and then avoid paying.
 
@@ -202,40 +287,52 @@ Each property below is also given as a pair of Python-style predicates — `Hypo
 ```python
 # P1: Unconditional payment to proposer
 #
-# Hypothesis: at slot N, beacon block B was admitted by process_block (no
-#   assertion failure in process_execution_payload_bid), and B is canonical at
-#   slot N+1 (it accumulated enough honest attestation weight to stay head).
-# Conclusion: at some point during epochs e..e+1 (where e = epoch_of(N)), a
-#   BuilderPendingWithdrawal carrying (bid.value, proposer's fee_recipient,
-#   bid.builder_index) was appended — either by Path A (slot N+1's
-#   apply_parent_execution_payload via settle_builder_payment) or by Path B
-#   (epoch-boundary process_builder_pending_payments under ≥60% quorum).
+# Hypothesis: B at slot N carries an admissible value-bearing bid AND B
+#   is on the canonical chain of every honest validator from slot N+2 onward.
+# Conclusion: by the end of epoch e+1 (+ Delta), every honest validator's
+#   state for its head block records a BuilderPendingWithdrawal carrying
+#   (bid.value, proposer's fee_recipient, bid.builder_index) - appended by
+#   Path A (settle_builder_payment at slot N+1) or Path B
+#   (process_builder_pending_payments at end of epoch e+1).
 
-def P1_hypothesis(state_at_N: BeaconState, B: BeaconBlock,
-                  B_is_canonical: bool) -> bool:
-    """B at slot N includes an admissible bid; B is canonical at slot N+1."""
+def P1(trace: Trace, B: BeaconBlock) -> bool:
+    return implies(P1_hypothesis(trace, B), P1_conclusion(trace, B))
+
+
+def P1_hypothesis(trace: Trace, B: BeaconBlock) -> bool:
     bid = B.body.signed_execution_payload_bid.message
-    return (
-        bid.slot == B.slot
-        and is_active_builder(state_at_N, bid.builder_index)
-        and can_builder_cover_bid(state_at_N, bid.builder_index, bid.value)
-        and B_is_canonical
-        # B_is_canonical is a fork-choice fact discharged from S1+S2+A6.
-    )
+    N = B.slot
+    if not (bid.value > 0):
+        return False                          # P1 covers value-bearing bids; self-build is vacuous
+    t_settled = (N + 2) * SECONDS_PER_SLOT
+    for s in trace:
+        if s.event.time < t_settled:
+            continue
+        for _, store_v in s.validator_stores.items():
+            if B not in honest_canonical(store_v):
+                return False
+    return True
 
-def P1_conclusion(withdrawals_appended_during_e_to_e_plus_1: Sequence[BuilderPendingWithdrawal],
-                  bid: ExecutionPayloadBid,
-                  proposer_fee_recipient: ExecutionAddress) -> bool:
-    """A BuilderPendingWithdrawal for the bid was appended within the 2-epoch window."""
-    return any(
-        w.amount == bid.value
-        and w.fee_recipient == proposer_fee_recipient
-        and w.builder_index == bid.builder_index
-        for w in withdrawals_appended_during_e_to_e_plus_1
-    )
-    # NOTE: this is a trace predicate over appended entries — a verifier with
-    # full trace access checks it directly; a snapshot-only verifier would
-    # need an auxiliary ghost variable to log appends.
+
+def P1_conclusion(trace: Trace, B: BeaconBlock) -> bool:
+    bid = B.body.signed_execution_payload_bid.message
+    fee_recipient = B.body.proposer_fee_recipient
+    N = B.slot
+    e = N // SLOTS_PER_EPOCH
+    t_deadline = (e + 2) * SLOTS_PER_EPOCH * SECONDS_PER_SLOT + DELTA
+
+    step = step_at(trace, t_deadline)
+    for _, store_v in step.validator_stores.items():
+        head = honest_canonical(store_v)[-1]
+        state = store_v.block_states[hash_tree_root(head)]
+        if not any(
+            w.amount == bid.value
+            and w.fee_recipient == fee_recipient
+            and w.builder_index == bid.builder_index
+            for w in state.builder_pending_withdrawals
+        ):
+            return False
+    return True
 ```
 
 </details>
@@ -248,28 +345,49 @@ def P1_conclusion(withdrawals_appended_during_e_to_e_plus_1: Sequence[BuilderPen
 ```python
 # P2: Builder revealing protection
 #
-# Hypothesis: an honest builder revealed the execution payload for canonical
-#   block B at slot N — i.e., broadcast a SignedExecutionPayloadEnvelope whose
-#   payload.block_hash == bid(B).block_hash, with blob data delivered (passes
-#   is_data_available). The honest super-majority observed both.
-# Conclusion: B is FULL on the canonical chain — bid(B).block_hash is in the
-#   payload hash chain (§3 Definition).
+# Hypothesis: the builder named in bid(B) is honest, broadcast an envelope
+#   binding to bid(B).block_hash before slot N+1 begins, AND the slot-(N+1)
+#   proposer is honest (S4 instance baked in).
+# Conclusion: from the start of slot N+2 onward, every honest validator's
+#   canonical chain contains B and declares B FULL.
 
-def P2_hypothesis(canonical: Sequence[BeaconBlock], B: BeaconBlock,
-                  store_at_honest_node: Store) -> bool:
-    """Honest builder revealed B's payload; envelope + blob data delivered to honest nodes."""
+def P2(trace: Trace, B: BeaconBlock) -> bool:
+    return implies(P2_hypothesis(trace, B), P2_conclusion(trace, B))
+
+
+def P2_hypothesis(trace: Trace, B: BeaconBlock) -> bool:
     bid = B.body.signed_execution_payload_bid.message
-    return (
-        B in canonical
-        and hash_tree_root(B) in store_at_honest_node.payloads
-        and store_at_honest_node.payloads[hash_tree_root(B)].payload.block_hash == bid.block_hash
-        and is_payload_verified(store_at_honest_node, hash_tree_root(B))
-        and is_data_available(hash_tree_root(B))
+    N = B.slot
+
+    honest_reveal = any(
+        isinstance(s.event.actor, BuilderActor)
+        and isinstance(s.event.message, SignedExecutionPayloadEnvelope)
+        and s.event.actor.index == bid.builder_index
+        and is_honest(s.event.actor, trace)
+        and s.event.message.message.payload.block_hash == bid.block_hash
+        and s.event.time < (N + 1) * SECONDS_PER_SLOT
+        for s in trace
     )
 
-def P2_conclusion(canonical: Sequence[BeaconBlock], B: BeaconBlock) -> bool:
-    """B is FULL on canonical — bid(B).block_hash belongs to the payload hash chain."""
-    return block_status(canonical, B) == FULL  # see §3 Definition (Block status)
+    return honest_reveal and is_honest(proposer_for_slot(trace, N + 1), trace)
+
+
+def P2_conclusion(trace: Trace, B: BeaconBlock) -> bool:
+    # Why slot N+2 (not N+1): block_status(chain, B) is undefined when B is
+    # the head. By slot N+2, the honest slot-(N+1) proposer's block has
+    # landed at every honest v under S1+S2 - giving B a successor on the
+    # canonical chain and pinning block_status(B) to FULL.
+    t_final = (B.slot + 2) * SECONDS_PER_SLOT
+    for s in trace:
+        if s.event.time < t_final:
+            continue
+        for _, store_v in s.validator_stores.items():
+            chain_v = honest_canonical(store_v)
+            if B not in chain_v:
+                return False
+            if block_status(chain_v, B) != FULL:
+                return False
+    return True
 ```
 
 </details>
@@ -282,43 +400,49 @@ def P2_conclusion(canonical: Sequence[BeaconBlock], B: BeaconBlock) -> bool:
 ```python
 # P3: Builder withholding protection
 #
-# Hypothesis: at slot N, beacon block B carries the bid of an honest builder
-#   who withheld the payload (Assumption A6 / H7 conditions failed); the
-#   BuilderPendingPayment weight, evaluated immediately before
-#   process_builder_pending_payments runs at the end of epoch e+1, is below
-#   the quorum threshold.
+# Hypothesis: the builder named in bid(B) is honest AND did NOT broadcast
+#   an envelope for B during the reveal window (slot N through slot N+1
+#   start).
 # Conclusion: no BuilderPendingWithdrawal carrying (bid.value, bid.builder_index)
-#   was appended during epochs e..e+1 — the BuilderPendingPayment is discarded
+#   ever appears in any honest validator's state for the head, from the
+#   epoch-(e+1) boundary forward - the BuilderPendingPayment is discarded
 #   by process_builder_pending_payments rather than paid out.
 
-def P3_hypothesis(state_just_before_epoch_boundary: BeaconState,
-                  B: BeaconBlock,
-                  builder_revealed: bool) -> bool:
-    """Honest builder withheld; the accumulated weight at the epoch boundary is
-    below the quorum threshold (this is where process_builder_pending_payments
-    reads it)."""
+def P3(trace: Trace, B: BeaconBlock) -> bool:
+    return implies(P3_hypothesis(trace, B), P3_conclusion(trace, B))
+
+
+def P3_hypothesis(trace: Trace, B: BeaconBlock) -> bool:
     bid = B.body.signed_execution_payload_bid.message
-    idx = bid.slot % (2 * SLOTS_PER_EPOCH)
-    payment = state_just_before_epoch_boundary.builder_pending_payments[idx]
-    quorum = get_builder_payment_quorum_threshold(state_just_before_epoch_boundary)
-    return (
-        not builder_revealed                                  # H7 / A6
-        and is_active_builder(state_just_before_epoch_boundary, bid.builder_index)
-        and payment.weight < quorum                           # quorum not met at evaluation
+    N = B.slot
+    builder_actor = BuilderActor(index=bid.builder_index)
+    if not is_honest(builder_actor, trace):
+        return False
+    return not any(
+        isinstance(s.event.message, SignedExecutionPayloadEnvelope)
+        and s.event.actor == builder_actor
+        and s.event.message.message.payload.block_hash == bid.block_hash
+        and s.event.time < (N + 1) * SECONDS_PER_SLOT
+        for s in trace
     )
 
-def P3_conclusion(withdrawals_appended_during_e_to_e_plus_1: Sequence[BuilderPendingWithdrawal],
-                  bid: ExecutionPayloadBid) -> bool:
-    """No BuilderPendingWithdrawal carrying this bid was appended during the 2-epoch window."""
-    return not any(
-        w.builder_index == bid.builder_index and w.amount == bid.value
-        for w in withdrawals_appended_during_e_to_e_plus_1
-    )
-    # NOTE: this is a trace predicate — a verifier with full trace access checks
-    # it directly; a snapshot-only verifier would track appends via a ghost
-    # variable. The "no withdrawal" claim is logically stronger than just
-    # "BuilderPendingPayment.withdrawal.amount == 0 at end of e+1" because the
-    # latter is also true when Path B *paid out* (which would violate P3).
+
+def P3_conclusion(trace: Trace, B: BeaconBlock) -> bool:
+    bid = B.body.signed_execution_payload_bid.message
+    N = B.slot
+    e = N // SLOTS_PER_EPOCH
+    t_settled = (e + 2) * SLOTS_PER_EPOCH * SECONDS_PER_SLOT + DELTA
+
+    for s in trace:
+        if s.event.time < t_settled:
+            continue
+        for _, store_v in s.validator_stores.items():
+            head = honest_canonical(store_v)[-1]
+            state = store_v.block_states[hash_tree_root(head)]
+            for w in state.builder_pending_withdrawals:
+                if w.builder_index == bid.builder_index and w.amount == bid.value:
+                    return False
+    return True
 ```
 
 </details>
@@ -331,31 +455,52 @@ def P3_conclusion(withdrawals_appended_during_e_to_e_plus_1: Sequence[BuilderPen
 ```python
 # P4: Data availability for chain inclusion
 #
-# Hypothesis: a payload hash h belongs to the payload hash chain of the
-#   canonical beacon chain (§3 Definition). Equivalently, there exists a
-#   non-head canonical block B* with bid(B*).block_hash == h AND
-#   block_status(canonical, B*) == FULL.
-# Conclusion: at every honest super-majority node, the execution payload with
-#   block_hash == h is in store.payloads, has passed verification, and its
-#   associated blob data passed data-availability sampling.
+# Hypothesis: at some (time t*, honest validator v*), h belongs to the
+#   payload hash chain of v*'s canonical chain, AND the slot-(N+1)
+#   proposer is honest, AND the slot-(N+1) attestation super-majority is
+#   honest (S4 instances baked in - N is the slot of the FULL block B*
+#   that commits to h).
+# Conclusion: for every (time t, honest v) at which h is in v's payload
+#   hash chain, the payload sits in v's store.payloads with block_hash
+#   == h, has passed verify_execution_payload_envelope, and its blob
+#   data passed is_data_available. Co-temporal: 'whenever h is on chain
+#   at v, it is available at v' (not a settled-by-time-t statement).
 
-def P4_hypothesis(canonical: Sequence[BeaconBlock], h: Hash32) -> Tuple[bool, Optional[BeaconBlock]]:
-    """h is in the payload hash chain. Return (True, B*) on witness; (False, None) otherwise."""
-    for B in canonical:
-        bid = B.body.signed_execution_payload_bid.message
-        if bid.block_hash == h and block_status(canonical, B) == FULL:
-            return True, B
-    return False, None
+def P4(trace: Trace, h: Hash32) -> bool:
+    return implies(P4_hypothesis(trace, h), P4_conclusion(trace, h))
 
-def P4_conclusion(store_at_honest_node: Store, h: Hash32, B_star: BeaconBlock) -> bool:
-    """Payload available + verified at honest super-majority; blob data available."""
-    r = hash_tree_root(B_star)
-    return (
-        r in store_at_honest_node.payloads
-        and store_at_honest_node.payloads[r].payload.block_hash == h
-        and is_payload_verified(store_at_honest_node, r)
-        and is_data_available(r)
-    )
+
+def P4_hypothesis(trace: Trace, h: Hash32) -> bool:
+    for s in trace:
+        for _, store_v in s.validator_stores.items():
+            chain_v = honest_canonical(store_v)
+            B_star = full_block_committing_to(chain_v, h)
+            if B_star is None:
+                continue
+            N = B_star.slot
+            if (is_honest(proposer_for_slot(trace, N + 1), trace)
+                    and honest_supermajority_attesters_for_slot(trace, N + 1)):
+                return True
+    return False
+
+
+def P4_conclusion(trace: Trace, h: Hash32) -> bool:
+    for s in trace:
+        for _, store_v in s.validator_stores.items():
+            chain_v = honest_canonical(store_v)
+            B_star = full_block_committing_to(chain_v, h)
+            if B_star is None:
+                continue
+            r = hash_tree_root(B_star)
+            if r not in store_v.payloads:
+                return False
+            if store_v.payloads[r].payload.block_hash != h:
+                return False
+            if not is_payload_verified(store_v, r):
+                return False
+            if not is_data_available(r):
+                return False
+    return True
 ```
 
 </details>
