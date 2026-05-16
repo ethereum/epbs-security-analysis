@@ -1,4 +1,3 @@
-
 ![draft](https://img.shields.io/badge/status-🚧_WIP-orange?style=for-the-badge)
 
 # ePBS: Overview, Lifecycle, and Properties
@@ -194,7 +193,9 @@ This is the foundation of Property P4 (Data availability for chain inclusion) be
 
 Each property is stated here informally and revisited precisely as we walk through the lifecycle. Each is backed by lemmas in the companion formal treatment.
 
-**P1: Unconditional payment to the proposer.** If beacon block including a valid bid is proposed in a timely fashion, the bid amount is transferred from the builder to the proposer's fee recipient within at most two epochs after the bid's slot. The builder cannot commit to a bid and then avoid paying.
+> ⚠️ **Required hypothesis for P1 and P2.** P1 and P2 below additionally invoke an explicit strengthening hypothesis: **`parent_remains_canonical(B)`** — parent(B) remains in the canonical chain of every honest validator at every later time. Without it, P1 and P2 can fail even for an honest builder. The motivation is detailed in the **Strengthening assumption** paragraph at the end of this section.
+
+**P1: Unconditional payment to the proposer.** If a beacon block including a valid bid is proposed in a timely fashion, the bid amount is paid to the proposer's fee recipient, with the on-chain payment commitment recorded within at most two epochs after the bid's slot. The builder cannot commit to a bid and then avoid paying.
 
 **P2: Builder revealing protection.** If an honest builder reveals, then its `bid.block_hash` is in the payload hash chain of the canonical beacon chain — equivalently, the block carrying its bid is FULL on chain (and by P4 below, the corresponding payload and blob data are available + valid).
 
@@ -208,7 +209,7 @@ These four are the **externally checkable** guarantees: each can in principle be
 
 **Adversarial model.** Properties P1–P4 hold under the structural assumptions catalogued in §8.1: network synchrony (S1, Δ < T_att), a per-committee Byzantine bound of β < 20% (S2), and a PTC Byzantine bound < 50% (S3). Some properties additionally invoke per-instance honesty hypotheses (e.g., "honest slot-N+1 proposer") stated in the claim itself; these are formalised as S4 in §8.
 
-**Strengthening assumption for P1 and P2.** P1 and P2 additionally rely on a strengthening hypothesis — that parent(B) remains in the canonical chain of every honest validator at every later time (we refer to this as `parent_remains_canonical(B)`) — which closes a residual gap against split-vote reorgs (a Byzantine slot-N proposer publishing the block late enough to fragment honest attestations, so that some honest validators vote on a sibling branch of parent(B) instead of on B). The §8.4 proof sketches for P1 and P2 invoke this hypothesis explicitly; we are currently working to weaken it — either by tightening the cautious-reveal threshold in A6 (currently 40%, matching `PROPOSER_SCORE_BOOST`) to a value that absorbs the worst-case Byzantine slot-N split-vote attack, or by adding an explicit "block was timely" precondition to the builder's reveal decision.
+**Strengthening assumption for P1 and P2.** P1 and P2 additionally rely on a strengthening hypothesis — that parent(B) remains in the canonical chain of every honest validator at every later time (we refer to this as `parent_remains_canonical(B)`) — which closes a residual gap against split-vote reorgs (a Byzantine slot-N proposer publishing the block late enough to fragment honest attestations, so that some honest validators vote on a sibling branch of parent(B) instead of on B). The §8.4 proof sketches for P1 and P2 invoke this hypothesis explicitly.
 
 The remainder of this document shows how the protocol's algorithms enforce each of P1–P4. §7 walks through the adversarial scenarios; §8 provides the formal-verification contract — a self-contained set of assumptions that, combined with the code in §5–§6, suffices to prove all four properties. The companion [formal treatment](https://github.com/ethereum/epbs-security-analysis/blob/formal-treatment/ePBS-pseudocode.md) discharges every §8 assumption as a lemma.
 
@@ -671,11 +672,11 @@ def should_extend_payload(store, root):
 
 ## 6. Unconditional payment
 
-> **TL;DR.** The IOU is recorded at bid time; settlement happens via **Path A** (next block, when the builder reveals) or **Path B** (end of epoch *e+1*, gated by a 60% attestation quorum). Path A suppresses Path B, so the proposer is paid exactly once. End-to-end, payment is settled within at most two epochs of the bid's slot — the timeframe is part of P1. Path B's quorum is what makes P3 (builder withholding protection) work: a builder who withholds in the absence of honest support is not charged.
+> **TL;DR.** The IOU is recorded at bid time; queueing for transfer happens via **Path A** (next block, when the builder reveals) or **Path B** (end of epoch *e+1*, gated by a 60% attestation quorum). Path A suppresses Path B, so the proposer is paid exactly once. End-to-end, the `BuilderPendingWithdrawal` is **queued** within at most two epochs of the bid's slot (this is the timing bound in P1); the actual EL credit follows when a subsequent block's `apply_withdrawals` drains the queue (typically a few slots later under standard liveness). Path B's quorum is what makes P3 (builder withholding protection) work: a builder who withholds in the absence of honest support is not charged.
 
 **Unconditional payment (P1) is the core economic guarantee that makes ePBS work.** A proposer can commit to a builder's bid without trusting the builder, because the payment will arrive regardless of the builder's behaviour.
 
-**Payment under ePBS is deferred — but bounded to a couple of epochs.** Pre-ePBS the proposer's MEV revenue arrived immediately. Under ePBS two settlement paths defer it: Path A fires at the *next* block when the builder reveals; Path B fires at the *end of epoch e+1* when the builder withholds and the beacon block reaches the 60% quorum. The actual on-chain debit (builder side) and credit (proposer side) happen later, when `apply_withdrawals` processes the `BuilderPendingWithdrawal` queue in a subsequent block. End-to-end, the proposer's `fee_recipient` receives the bid value within at most two epochs of the bid's slot — slightly slower than pre-ePBS in exchange for unconditionality (this is the timing bound that is part of P1).
+**Payment under ePBS is deferred — but bounded to a couple of epochs.** Pre-ePBS the proposer's MEV revenue arrived immediately. Under ePBS two settlement paths defer it: Path A fires at the *next* block when the builder reveals; Path B fires at the *end of epoch e+1* when the builder withholds and the beacon block reaches the 60% quorum. **Both paths only enqueue** a `BuilderPendingWithdrawal` in `state.builder_pending_withdrawals`. The actual on-chain debit (builder side) and credit (proposer side) happen later, when `apply_withdrawals` (called from `process_block`) processes the queue in a subsequent block. End-to-end, the proposer's `BuilderPendingWithdrawal` is **queued** within at most two epochs of the bid's slot (this is the timing bound that is part of P1); the final EL credit follows via `apply_withdrawals` within a few additional slots under standard liveness — slightly slower than pre-ePBS in exchange for unconditionality.
 
 The payment mechanism has **three stages** with **two paths**:
 
@@ -1230,7 +1231,7 @@ The argument is valid **given** the stated assumptions; the follow-up formal tre
 
 **P1 (Unconditional payment to the proposer).**
 
-*Claim:* For a block at slot N with `bid.value > 0` proposed in a timely fashion (i.e., reaching the 60% same-slot attestation quorum among honest attesters), the bid amount is transferred from the builder to the proposer's `fee_recipient` within at most two epochs of slot N, and the payment is single (no double-charge). The case `bid.value = 0` (self-build) is vacuously covered: by **G-BidAdmit**, no IOU is created, and no payment is owed.
+*Claim:* For a block at slot N with `bid.value > 0` proposed in a timely fashion (i.e., reaching the 60% same-slot attestation quorum among honest attesters), within at most two epochs of slot N the bid amount is **queued for transfer** to the proposer's `fee_recipient` as a `BuilderPendingWithdrawal` entry in `state.builder_pending_withdrawals`, and the payment is single (no double-charge). The execution-layer credit is then performed by `process_withdrawals` in a subsequent block. The case `bid.value = 0` (self-build) is vacuously covered: by **G-BidAdmit**, no IOU is created, and no payment is owed.
 
 <details>
 <summary><b>Proof sketch</b> (click to expand)</summary>
