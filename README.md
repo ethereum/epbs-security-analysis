@@ -35,6 +35,7 @@ Every name below is a pedagogical helper, not a spec function. Each one abstract
 | `has_execution_payload_envelope(store, root)`                                             | Shorthand for `root in store.payloads` (equivalent to `is_payload_verified(store, root)` in `fork-choice.md`).                                                                                   |
 | `check_blob_data(store, root)`                                                            | The spec function is `is_data_available(beacon_block_root)` (`fork-choice.md`); we keep `store` in the signature so reads are visible at the call site.                                          |
 | `execution_engine.build_payload(...)`                                                     | The two-step spec flow `notify_forkchoice_updated(...) → engine_getPayloadV6(payload_id)`; we collapse to a single call returning the `(payload, execution_requests)` bundle.                     |
+| `update_participation_flags(state, i, data)`                                              | Abstracts the inline flag-update loop in `process_attestation` (`beacon-chain.md:1728–1735`): for each participation flag set by this attestation that validator `i` has not yet set, set the flag on `epoch_participation[i]` and accumulate the proposer reward. Returns `True` iff at least one new flag was set. Used inside the §8.3 G-PayAttest pseudocode body. |
 
 *Math notation in §8 (proof sketches):*
 
@@ -1146,7 +1147,7 @@ def process_execution_payload_bid(state, block):
             withdrawal=BuilderPendingWithdrawal(
                 amount=bid.value,
                 builder_index=bid.builder_index,
-                fee_recipient=...))
+                fee_recipient=bid.fee_recipient))     # P1 destination — set by spec at beacon-chain.md:1463
 
     state.latest_execution_payload_bid = bid
 ```
