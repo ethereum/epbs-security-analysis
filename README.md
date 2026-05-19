@@ -8,7 +8,7 @@ This document is the first part of a security analysis of ePBS. We walk through 
 
 **Who should read this.** Anyone who wants a rigorous but readable account of how ePBS works: what changed from pre-ePBS, why, and what guarantees the protocol provides. We assume familiarity with Ethereum's consensus layer (Gasper, LMD-GHOST, FFG, attestation committees, fork choice). We do not assume prior knowledge of EIP-7732.
 
-**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`fa8bb08`](https://github.com/ethereum/consensus-specs/commit/fa8bb08), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/master/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
+**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`4a4937b`](https://github.com/ethereum/consensus-specs/commit/4a4937b), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/master/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
 
 **Notation.** Code blocks use Python syntax at an abstracted level. An `...` in arguments or fields means "additional fields omitted for brevity." One convention is worth knowing upfront; the rest are reference material in the expandable table below.
 
@@ -29,10 +29,10 @@ Every name below is a pedagogical helper, not a spec function. Each one abstract
 | `select_one_bid(bids)`                                                                    | "Select one bid …" (`validator.md`, §"Signed execution payload bid")                                                                                                                                                                                                                                                                                                           |
 | `aggregate_ptc_votes(slot - 1)`                                                           | "The proposer MUST aggregate all payload attestations with the same data" (`validator.md`, §"Payload attestations")                                                                                                                                                                                                                                                             |
 | `construct_beacon_block(state, body)`                                                     | Standard `BeaconBlock` container construction with `slot`, `proposer_index`, `parent_root`, `state_root`, `body`.                                                                                                                                                                                                                                                      |
-| `get_parent_execution_requests(store, state)`                                             | Three-case logic in `validator.md` §"Parent execution requests" (empty if pre-Gloas, `store.payloads[parent_root].execution_requests` if `should_extend_payload` is true, empty otherwise).                                                                                                                                                                                 |
+| `get_parent_execution_requests(store, state)`                                             | Three-case logic in `validator.md` §"Parent execution requests" with `head = get_head(store)`: empty `ExecutionRequests()` if the parent block is pre-Gloas; `store.payloads[head.root].execution_requests` if `should_build_on_full(store, head)` returns True; empty `ExecutionRequests()` otherwise.                                                                                          |
 | `is_head_of_chain(block, store)`                                                          | Shorthand for `get_head(store).root == hash_tree_root(block)` — the "head of the builder's chain" check from `builder.md` §"Honest payload withheld messages".                                                                                                                                                                                                               |
 | `has_beacon_block_for_slot(store, slot)`, `get_beacon_block_root_for_slot(store, slot)` | Inline checks in `validator.md` §"Constructing the `PayloadAttestationMessage`": the PTC member checks whether it has seen any beacon block for the assigned slot and obtains its hash tree root.                                                                                                                                                                             |
-| `has_execution_payload_envelope(store, root)`                                             | Shorthand for `root in store.payloads` (equivalent to `is_payload_verified(store, root)` in `fork-choice.md`).                                                                                                                                                                                                                                                               |
+| `has_execution_payload_envelope(store, root)`                                             | Shorthand for "the node received a `SignedExecutionPayloadEnvelope` for `root` and stored it in `store.payloads` strictly before `get_payload_due_ms()` milliseconds into the slot" (spec: `validator.md` §"Constructing a payload attestation message"). When PTC vote time is reached, this is the predicate the honest PTC member evaluates to decide `data.payload_present`. The payload-arrival deadline is a separate constant (`PAYLOAD_DUE_BPS = 7500`, currently equal to the PTC-vote deadline but conceptually distinct). |
 | `check_blob_data(store, root)`                                                            | The spec function is `is_data_available(beacon_block_root)` (`fork-choice.md`); we keep `store` in the signature so reads are visible at the call site.                                                                                                                                                                                                                      |
 | `execution_engine.build_payload(...)`                                                     | The two-step spec flow `notify_forkchoice_updated(...) → engine_getPayloadV6(payload_id)`; we collapse to a single call returning the `(payload, execution_requests)` bundle.                                                                                                                                                                                                 |
 | `update_participation_flags(state, i, data)`                                              | Abstracts the inline flag-update loop in `process_attestation` (`beacon-chain.md:1728–1735`): for each participation flag set by this attestation that validator `i` has not yet set, set the flag on `epoch_participation[i]` and accumulate the proposer reward. Returns `True` iff at least one new flag was set. Used inside the §8.3 G-PayAttest pseudocode body. |
@@ -182,7 +182,7 @@ This is the strongest hash-level statement we can extract from on-chain data alo
 
 **The payload and the blob data arrive via different channels and can diverge.** A node may have the payload but not all the blob columns it samples, or vice versa. The PTC vote at slot N reports both signals independently: `payload_present = True` confirms payload arrival; `blob_data_available = True` confirms the member's sampled blob columns arrived and pass KZG verification.
 
-**Both halves are required for chain inclusion.** When slot N+1's `should_extend_payload` decides whether to favour FULL for block B, it requires PTC majority on both — `is_payload_timely` AND `is_payload_data_available`. If either fails (and no proposer-side fallback fires), no subsequent block declares B FULL and B is EMPTY on chain.
+**Both halves are required for chain inclusion.** When slot N+1's `should_extend_payload` decides whether to favour FULL for block B, it requires PTC majority on both — `payload_timeliness(store, root, timely=True)` AND `payload_data_availability(store, root, available=True)`. If either fails (and no proposer-side fallback fires), no subsequent block declares B FULL and B is EMPTY on chain.
 
 This is the foundation of Property P4 (Data availability for chain inclusion) below.
 
@@ -260,7 +260,7 @@ A slot under ePBS proceeds through five phases. Below we walk through the phases
 
 *Figure 3b: Pre-slot self-build. No external builder is involved (Builder column dashed); the Proposer runs `prepare_execution_payload` locally and assembles the bid with `builder_index = BUILDER_INDEX_SELF_BUILD`, `value = 0`, signature `G2_POINT_AT_INFINITY`. Nothing crosses the network in Phase 0 — the execution payload and bid are held until Phase 1.*
 
-The proposer for an upcoming slot may broadcast a `SignedProposerPreferences` message specifying its preferred `fee_recipient` (where to receive payment) and `gas_limit`. Without this broadcast, the gossip network will not forward any builder bids for that slot.
+The proposer for an upcoming slot may broadcast a `SignedProposerPreferences` message specifying its preferred `fee_recipient` (where to receive payment) and `target_gas_limit` (the desired gas-limit target — bids whose actual `gas_limit` is not compatible with this target via `is_gas_limit_target_compatible(parent_gas_limit, bid.gas_limit, target_gas_limit)` are filtered at the gossip layer). Without this broadcast, the gossip network will not forward any builder bids for that slot.
 
 The builder, observing the proposer's preferences, constructs an execution payload via its execution engine and broadcasts a bid:
 
@@ -271,8 +271,8 @@ The builder, observing the proposer's preferences, constructs an execution paylo
 def submit_bid(builder, upcoming_slot, state, proposer_preferences):
     payload, execution_requests = execution_engine.build_payload(
         parent_hash=state.latest_block_hash,
-        fee_recipient=proposer_preferences.fee_recipient,  # MUST match preferences
-        gas_limit=proposer_preferences.gas_limit,          # MUST match preferences
+        fee_recipient=proposer_preferences.fee_recipient,         # MUST match preferences
+        target_gas_limit=proposer_preferences.target_gas_limit,   # compatibility (not equality) with target — checked at gossip
         ...,
     )
     bid = ExecutionPayloadBid(
@@ -556,6 +556,7 @@ Three observations about this handler:
 - **No block, no vote.** If no beacon block has arrived by $T_{\mathrm{ptc}}$, the early return fires — *absence of a block is not a vote with `payload_present = False`; it is no vote at all*.
 - **Payload handling is best-effort.** A late or missing payload simply leaves `store.payloads` unpopulated, which is exactly what `has_execution_payload_envelope` reads here.
 - **Vote-at-deadline vs vote-on-receipt are both spec-compliant.** The `@Upon(time_in_slot == T_PTC ...)` form above models vote-at-deadline (the member waits and evaluates the store at $T_{\mathrm{ptc}}$). Figures 2 and 6a depict the alternative — vote-on-receipt — where the witness vote is broadcast the moment the payload is observed. Both satisfy the spec contract that the broadcast happens by `get_payload_attestation_due_ms()`; they differ only in how soon a `payload_present = True` vote is committed once the evidence exists. The proofs in §8 and the formal treatment do not depend on the choice between the two.
+- **Two separate deadlines.** The spec distinguishes the **payload-arrival deadline** `get_payload_due_ms()` (parameter `PAYLOAD_DUE_BPS = 7500`, currently 75% of the slot) from the **PTC-vote deadline** `get_payload_attestation_due_ms()` (parameter `PAYLOAD_ATTESTATION_DUE_BPS = 7500`, also 75% currently). The PTC member sets `data.payload_present = True` only if the envelope arrived strictly **before `get_payload_due_ms()`** — not merely at any point before the vote is cast. This separation closes a builder-side ex-ante reorg vector: a builder cannot release the payload right before the vote deadline to ensure timeliness while leaving the next proposer with no time to import it. The two constants are equal in the current calibration but may diverge in future spec revisions.
 
 **The PTC vote contains two independent signals, because the builder delivers two things:**
 
@@ -566,7 +567,7 @@ Three observations about this handler:
 
 **The PTC member reports what it observed, not what it judged.** It does not call `verify_execution_payload_envelope` or any validation function — it only checks arrival on the gossip network. This decoupling between observation (PTC) and validation (`verify_execution_payload_envelope`) is fundamental: it allows the PTC vote to be fast (no heavy execution required) while validity remains enforced separately by `store.payloads` (populated by `on_execution_payload_envelope` only after the execution engine verifies the execution payload — see Phase 3).
 
-**The slot-N+1 chain-inclusion check requires PTC majority on both signals.** `should_extend_payload` (described in Phase 5) consults both `is_payload_timely` (majority voted `payload_present = True`) AND `is_payload_data_available` (majority voted `blob_data_available = True`). If either fails, the PTC-driven path of the check fails; Phase 5 describes the proposer-side fallbacks that may still fire in that case.
+**The slot-N+1 chain-inclusion check requires PTC majority on both signals.** `should_extend_payload` (described in Phase 5) consults both `payload_timeliness(store, root, timely=True)` (majority voted `payload_present = True`) AND `payload_data_availability(store, root, available=True)` (majority voted `blob_data_available = True`). If either fails, the PTC-driven path of the check fails; Phase 5 describes the proposer-side fallbacks that may still fire in that case.
 
 **Witness-statement semantics is a behavioral assumption (A4), not an external property.** Honest PTC members vote `payload_present = True` if and only if they locally observed the payload, and `blob_data_available = True` if and only if the blob data columns they are responsible for arrived and pass KZG verification — they never check execution validity. An external observer cannot tell from a PTC vote alone whether the member "actually saw" the payload; this is therefore an assumption about honest implementations (formalized as A4 / discharged by Lemma H4), not a property checkable from messages.
 
@@ -658,37 +659,68 @@ def should_extend_payload(store, root):
     # Guard: execution payload must have been locally verified
     if not is_payload_verified(store, root):
         return False
+    proposer_root = store.proposer_boost_root
+    payload_is_timely = payload_timeliness(store, root, timely=True)
+    payload_data_is_available = payload_data_availability(store, root, available=True)
     # Primary path: PTC majority confirms the execution payload arrived
     return (
-        (is_payload_timely(store, root) and is_payload_data_available(store, root))
+        (payload_is_timely and payload_data_is_available)
         # Fallback (a): no block proposed yet for the new slot — default to FULL
-        or store.proposer_boost_root == Root()
+        or proposer_root == Root()
         # Fallback (b): proposed block is on a different branch — irrelevant
-        or store.blocks[store.proposer_boost_root].parent_root != root
+        or store.blocks[proposer_root].parent_root != root
         # Fallback (c): proposed block declares parent was FULL — agree
-        or is_parent_node_full(store, store.blocks[store.proposer_boost_root])
+        or is_parent_node_full(store, store.blocks[proposer_root])
     )
 ```
 
 **`should_extend_payload` first checks a hard precondition, then evaluates four independent conditions.** The function decides whether to favor FULL for a specific block — call it B. The hard precondition is `is_payload_verified(store, root)` — the node must have locally verified B's execution payload via `on_execution_payload_envelope`. If it fails, the function returns False immediately. This hard guard exists primarily to protect the fallback conditions below: the PTC primary path already checks `is_payload_verified` internally, but the fallbacks do not — without the hard guard, fallback (a), (b), or (c) could favor FULL for a payload the node has never received. If the hard guard passes, the function evaluates four independent conditions — any one returning True is sufficient. The intuition behind each condition:
 
-- **PTC primary path** — "The committee confirms both the payload and the blob data arrived." Two independent PTC majority signals must hold: `is_payload_timely` (a majority of PTC members voted `payload_present = True`, confirming the payload arrived) AND `is_payload_data_available` (a majority voted `blob_data_available = True`, confirming the blob data columns arrived). These are two separate checks on two separate PTC vote arrays — the payload and the blob data arrive through different gossip channels and can diverge. This is direct evidence of full delivery — the strongest signal available.
+- **PTC primary path** — "The committee confirms both the payload and the blob data arrived." Two independent PTC majority signals must hold: `payload_timeliness(store, root, timely=True)` (a True-timeliness quorum: a majority of PTC members voted `payload_present = True`, confirming the payload arrived in time) AND `payload_data_availability(store, root, available=True)` (a True-DA quorum: a majority voted `blob_data_available = True`, confirming the blob data columns arrived). These are two separate checks on two separate PTC vote arrays — the payload and the blob data arrive through different gossip channels and can diverge. This is direct evidence of full delivery — the strongest signal available. (Each helper takes a boolean second-argument because the same predicate is also used to count False-quorums when the proposer needs to decide whether to *reorg* an unavailable block; see Remark on `should_build_on_full` below.)
 - **Fallback (a): no block proposed yet for the next slot** — "Nobody has said otherwise, so give B's builder the benefit of the doubt." If the slot N+1 proposer has not published a block yet, there is no contrary declaration about B's execution payload. Defaulting to EMPTY would punish B's builder before anyone has even claimed B's execution payload is missing, so the protocol defaults to FULL for B.
 - **Fallback (b): the slot N+1 block is on a different branch** — "The slot N+1 proposer is not building on B at all." A block was proposed for slot N+1, but its parent is some other block, not B. The slot N+1 proposer's FULL/EMPTY declaration says nothing about B — it is about a different part of the tree. Default to FULL for B.
 - **Fallback (c): the slot N+1 block builds on B and declares B was FULL** — "The slot N+1 proposer agrees that B's execution payload was delivered." The slot N+1 block is a child of B and its `bid.parent_block_hash` matches B's committed `block_hash`, meaning the slot N+1 builder read B's execution state and built on top of it. The proposer is confirming delivery.
 
-**The function returns False only when both the PTC and the slot N+1 proposer claim B's execution payload was not delivered.** All four conditions must fail simultaneously: the PTC says the payload did not arrive, a slot N+1 block exists, that block is a child of B, and that block declares B was EMPTY. This requires two colluding parties.
+> **Which fallback is live at which time.** Fallbacks (b) and (c) require `proposer_root != Root()`, so only the PTC primary path and **fallback (a)** are reachable from the slot-N+1 proposer's *own* `get_head` at construction time (when `on_tick_per_slot` has just reset `proposer_boost_root`). The proposer defaults to FULL via fallback (a) whenever the PTC primary path doesn't fire — for example, when a True-DA quorum exists but no True-timeliness quorum has been reached on `payload_present`. The proposer's local `is_payload_verified` is then enough to extend FULL, modulo the `should_build_on_full` veto introduced below. Fallbacks (b) and (c) only come alive afterward — when every other honest node runs `get_head` against the now-broadcast slot-N+1 block — and the proposer's `parentStatus` declaration is what determines which of them fires for the rest of the network. So the proposer uses (b) and (c) only indirectly: by writing the declaration that triggers them downstream.
 
-**The interplay between the PTC primary path and the proposer-based fallbacks is the core security argument.** The four cases:
+**`should_extend_payload` returns False under two disjunctive conditions:** (i) `is_payload_verified(store, B.root)` is False — this node has not locally validated B's payload, so FULL is not a sound choice for this node's fork-choice; OR (ii) the hard guard passes but all four conditions of the disjunction fail — PTC primary fails AND a slot N+1 block exists AND it builds on B AND it declares EMPTY.
 
-| PTC                     | Next-slot proposer         | Outcome | Mechanism                                                                   |
-| ----------------------- | -------------------------- | ------- | --------------------------------------------------------------------------- |
-| Honest (votes True)     | Honest (declares FULL)     | FULL    | Both the PTC primary path and fallback (c) confirm                          |
-| Honest (votes True)     | Malicious (declares EMPTY) | FULL    | **PTC primary path overrides** the proposer's false EMPTY declaration |
-| Malicious (votes False) | Honest (declares FULL)     | FULL    | Fallback (c) (proposer's honest FULL declaration) overrides the lying PTC   |
-| Malicious (votes False) | Malicious (declares EMPTY) | EMPTY   | Both attack vectors required — only successful attack                      |
+**`should_build_on_full`: the proposer's stricter constraint.** `should_extend_payload` is the tiebreaker every node consults inside `get_head`. The slot N+1 proposer, in addition, must consult a stricter helper before constructing its block:
 
-> **Why the PTC exists.** Without the PTC, a single malicious next-slot proposer could force EMPTY for any block, because the only fallback that survives the proposer's EMPTY declaration is the PTC primary path. With the PTC, an honest 512-member committee overrides the single proposer. The colluding attack succeeds only when **both** the PTC majority and the next-slot proposer act maliciously — this is what underwrites P3 (an honest builder's reveal stays on chain) on the fork-choice side.
+```python
+def should_build_on_full(store, head):
+    assert head.payload_status != PAYLOAD_STATUS_PENDING
+    if head.payload_status == PAYLOAD_STATUS_EMPTY:
+        return False
+    return not payload_data_availability(store, head.root, available=False)
+```
+
+The slot N+1 proposer calls this on `head = get_head(store)`. If `head` is FULL but a PTC majority has voted `blob_data_available = False` for B — a **False-DA quorum** — then `should_build_on_full` returns False, and the proposer **MUST** declare `parentStatus = EMPTY` in its bid (and build its EL payload on the EMPTY parent state). This holds even if the proposer's own local copy of B's payload passes verification. The body's use of `payload_data_availability(store, head.root, available=False)` — the `available=False` argument flipping the helper to count `False` votes — is the operational mechanism. Spec: `fork-choice.md` § "New `should_build_on_full`"; the function is consumed by `prepare_execution_payload` and by the `parent_execution_requests` construction in `validator.md`.
+
+**Local DA versus network-wide DA.** Two distinct DA signals operate in the protocol and can disagree:
+
+- **Local DA** (`is_data_available(beacon_block_root)`, enforced inside `on_execution_payload_envelope` — §5 Phase 3): a per-node check on the columns *this* node sampled. Gates whether `store.payloads[root]` is populated, and hence whether `is_payload_verified(store, root)` returns True at this node.
+- **Network-wide DA** (`payload_data_availability(store, root, available=True/False)`): aggregates PTC votes into a quorum signal. Each PTC member's vote reflects their own local sampling; the aggregate reflects whether a network-wide majority observed DA.
+
+Under PeerDAS asymmetric sampling, the two can disagree: a malicious builder may selectively deliver columns to some nodes (e.g., the slot N+1 proposer) while withholding from others (e.g., several PTC members). The proposer's local view (`is_payload_verified` = True) is then misaligned with the PTC's collective view (a False-DA quorum). `should_build_on_full` resolves the conflict in favor of the PTC: the proposer is required to build on EMPTY when the PTC reports DA failure, regardless of the proposer's own local copy.
+
+**Combined interaction: what determines FULL on chain at slot N+1.** Assuming the builder revealed and `store.payloads[B.root]` is populated at honest nodes, the slot-N+1 outcome depends on the PTC's two-dimensional vote and the proposer's behaviour:
+
+| PTC `payload_present` (timeliness) | PTC `blob_data_available` (DA) | Slot N+1 proposer | Outcome | Mechanism |
+| --- | --- | --- | --- | --- |
+| Majority True | Majority True | Honest (declares FULL) | FULL | PTC primary path AND fallback (c) confirm |
+| Majority True | Majority True | Malicious (declares EMPTY) | FULL | PTC primary path overrides the proposer's false EMPTY |
+| Majority False | Majority True | Honest (declares FULL) | FULL | Primary fails on timeliness, but fallback (c) saves; `should_build_on_full` is happy (no False-DA quorum) |
+| Majority False | Majority True | Malicious (declares EMPTY) | EMPTY | Primary path and all fallbacks fail |
+| any | **Majority False** | Honest (forced to declare EMPTY) | **EMPTY** | `should_build_on_full` returns False — honest proposer MUST declare EMPTY |
+| any | **Majority False** | Malicious (declares EMPTY) | **EMPTY** | Same as honest-proposer row above — no collusion needed |
+
+> **The PTC's bidirectional authority.** The fork-choice rule treats the PTC as the network's authoritative DA witness, with two-sided authority:
+> - A **malicious slot-N+1 proposer alone cannot force EMPTY**: an honest PTC majority producing True-quorums on both signals overrides the proposer via the PTC primary path.
+> - A **malicious PTC majority producing a False-DA quorum alone can force EMPTY**: `should_build_on_full` strips the honest proposer's discretion to build on FULL.
+> - A **malicious PTC majority producing only a False-timeliness quorum** (with a True-DA quorum) cannot force EMPTY by itself: the honest proposer's fallback (c) saves FULL. This case is the one where proposer collusion is required.
+>
+> Under the structural assumption **S3** (honest PTC majority), no False-DA quorum arises against an honestly revealed payload, so honest builders are protected (this is the regime in which P2 holds). Outside S3, a malicious PTC majority producing a False-DA quorum can force EMPTY without proposer collusion — the cost of treating the PTC's collective DA judgment as authoritative.
 
 ---
 
@@ -762,18 +794,20 @@ def process_builder_pending_payments(state):
 
 ## 7. Adversarial summary
 
-> **TL;DR.** Tables enumerate every PTC × proposer combination for delivered and withheld payloads. The only successful attack is *malicious PTC + colluding proposer*. The damage is bounded — the proposer is still paid via Path B, no honest validator is slashed, and the FULL branch persists structurally — but the protocol does not force re-selection of the FULL branch by subsequent honest proposers.
+> **TL;DR.** Tables enumerate every PTC × proposer combination for delivered and withheld payloads. Two distinct paths force EMPTY against an honestly delivered payload: (i) **malicious PTC producing a False-DA quorum alone** — `should_build_on_full` forces every honest slot-N+1 proposer to declare EMPTY, no collusion needed; (ii) **malicious PTC producing a False-timeliness quorum + colluding proposer** — fallback (c) of `should_extend_payload` fails because the proposer declares EMPTY. Damage is bounded in both cases — the proposer is still paid via Path B, no honest validator is slashed, and the FULL branch persists structurally — but the protocol does not force re-selection of the FULL branch by subsequent honest proposers.
 
-We close with a comprehensive table summarizing what happens under each combination of adversarial behavior. The table covers both the case where the builder delivered a valid execution payload and the case where the builder withheld.
+We close with comprehensive tables summarizing what happens under each combination of adversarial behavior. The tables cover both the case where the builder delivered a valid execution payload and the case where the builder withheld.
 
-**Payload delivered** (`store.payloads[r]` populated, FULL node exists):
+**Payload delivered** (`store.payloads[r]` populated at honest nodes, FULL node exists in the fork-choice tree). The outcome depends on the PTC's two-dimensional vote (timeliness and DA) and the slot N+1 proposer's behaviour:
 
-| PTC               | Next-slot proposer | Outcome         | Why                                                                                                                                    |
-| ----------------- | ------------------ | --------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Honest (True)     | Honest (FULL)      | FULL            | Both the PTC primary path and fallback (c) confirm                                                                                     |
-| Honest (True)     | Malicious (EMPTY)  | FULL            | PTC primary path overrides the proposer's false EMPTY                                                                                  |
-| Malicious (False) | Honest (FULL)      | FULL            | Fallback (c) overrides the lying PTC                                                                                                   |
-| Malicious (False) | Malicious (EMPTY)  | **EMPTY** | Only successful attack — slot N+1 decides EMPTY; bounded damage (proposer still paid, no slashing, FULL branch persists structurally) |
+| PTC `payload_present` | PTC `blob_data_available` | Next-slot proposer | Outcome | Mechanism |
+| --- | --- | --- | --- | --- |
+| Majority True | Majority True | Honest (FULL)        | FULL    | PTC primary path AND fallback (c) confirm                       |
+| Majority True | Majority True | Malicious (EMPTY)    | FULL    | PTC primary path overrides the proposer's false EMPTY            |
+| Majority False | Majority True | Honest (FULL)        | FULL    | Primary fails on timeliness, but fallback (c) saves; `should_build_on_full` happy (no False-DA quorum) |
+| Majority False | Majority True | Malicious (EMPTY)    | **EMPTY** | Primary path and all fallbacks fail — colluding "PTC + proposer" attack on timeliness |
+| any | **Majority False** | Honest (forced EMPTY) | **EMPTY** | `should_build_on_full` forces the honest proposer to declare EMPTY — PTC-only attack on DA |
+| any | **Majority False** | Malicious (EMPTY)    | **EMPTY** | Same as honest-proposer row — no collusion needed                |
 
 **Payload withheld or invalid** (`store.payloads[r]` not populated, FULL node does not exist):
 
@@ -793,17 +827,17 @@ We close with a comprehensive table summarizing what happens under each combinat
 | Withholds                         | No (< 60% quorum)      | Builder does NOT pay                                               |
 | Reveals invalid execution payload | Yes (60% quorum)       | Builder pays (Path B; invalid execution payload doesn't clear IOU) |
 
-The rows highlighted as the "only successful attack" and "no builder payment" cases are the core results that justify the design choices behind the PTC, the fallback conditions, and the 60% quorum. A follow-up formal treatment will provide line-level proofs of each row.
+The **EMPTY** rows in the "Payload delivered" table and the "Builder does NOT pay" row are the core results that justify the design choices behind the PTC, the fallback conditions, the `should_build_on_full` proposer-side constraint, and the 60% quorum. The follow-up formal treatment provides line-level proofs of each row. Note that under **S3** (honest PTC majority) the two PTC-driven EMPTY rows are inaccessible: no False-quorum (on `payload_present` or `blob_data_available`) arises against an honestly delivered payload.
 
-### Concrete example: the only successful attack
+### Concrete example: False-timeliness quorum + colluding-proposer attack
 
 #### Setup
 
-**Suppose at slot 100 the builder reveals a valid execution payload for block B.** All honest nodes validate it and populate `store.payloads[B.root]`. A malicious PTC majority (at least 256 of 512 members) votes `payload_present = False`, and the slot 101 proposer colludes by declaring `parentStatus = EMPTY`. (The threshold is 256 because `is_payload_timely` returns True only when `sum(True votes) > PAYLOAD_TIMELY_THRESHOLD = 256`; equivalently, the check fails when `sum(True votes) ≤ 256`, which obtains as soon as at least 256 of the 512 votes are non-True (False or absent).)
+**Suppose at slot 100 the builder reveals a valid execution payload for block B.** All honest nodes validate it and populate `store.payloads[B.root]`. A malicious PTC majority (at least 256 of 512 members) votes `payload_present = False` but **True on `blob_data_available`** (this is the False-timeliness-only case; the orthogonal False-on-DA case is sketched separately at the end of this section). The slot 101 proposer colludes by declaring `parentStatus = EMPTY`. (The threshold is 256 because `payload_timeliness(store, B.root, timely=True)` returns True only when `sum(True votes) > PAYLOAD_TIMELY_THRESHOLD = 256`; equivalently, the check fails when `sum(True votes) ≤ 256`, which obtains as soon as at least 256 of the 512 votes are non-True (False or absent).)
 
 #### The honest builder for slot 101
 
-**An honest builder for slot 101 sees B-FULL as the head — the PTC alone cannot force EMPTY.** Running `get_head` to determine which state to build on, the builder sees the malicious PTC votes — the PTC primary path of `should_extend_payload` fails. However, no block has been proposed for slot 101 yet (`proposer_boost_root` is the zero root), so **fallback (a) fires** and `should_extend_payload` returns True despite the lying PTC. This illustrates the role of the PTC: it alone cannot force EMPTY — it needs a colluding proposer to also publish a block that causes all fallbacks to fail. (This is the mechanism behind P3 — an honest builder's reveal survives a malicious PTC because the next-slot proposer can still pull the chain onto FULL via fallback (c).)
+**An honest builder for slot 101 sees B-FULL as the head — a False-timeliness quorum alone cannot force EMPTY.** Running `get_head` to determine which state to build on, the builder sees the malicious PTC votes — the PTC primary path of `should_extend_payload` fails (timeliness component is False). However, no block has been proposed for slot 101 yet (`proposer_boost_root` is the zero root), so **fallback (a) fires** and `should_extend_payload` returns True despite the lying PTC. The proposer's `should_build_on_full` is also happy because the PTC voted True on `blob_data_available` (no False-DA quorum). So the honest path leads to FULL; only the colluding proposer's EMPTY declaration can push the outcome to EMPTY. (This is the mechanism behind P3 — an honest builder's reveal survives a False-timeliness-only PTC because the next-slot proposer can still pull the chain onto FULL via fallback (c).)
 
 **The honest builder's FULL-declaring bid goes unused, but it costs nothing.** The builder reads `state.latest_block_hash` from the FULL state — which equals `bid(B).block_hash` — and sets its bid's `parent_block_hash` accordingly. The malicious proposer will not include a FULL-declaring bid (it would place the block on the B-FULL branch, defeating the attack). Instead, the malicious proposer **self-builds** (with `BUILDER_INDEX_SELF_BUILD` and `value = 0`) on the B-EMPTY state, producing block C. The honest builder's bid goes unused — no IOU is created, no payment is owed, the builder is not economically harmed.
 
@@ -826,6 +860,19 @@ The rows highlighted as the "only successful attack" and "no builder payment" ca
 - **FULL branch persists structurally.** `store.payloads[B.root]` exists in every honest node's store and cannot be removed. The `(B.root, FULL)` node remains in the fork-choice tree forever, even if it is never re-selected as canonical.
 
 The colluders extract no economic advantage at the proposer's expense — they merely impose a wrong FULL/EMPTY decision at slot 101 and force the canonical chain onto the EMPTY branch from that point forward. Whether this matters in practice depends on downstream applications that expected slot 100's execution payload contents to be canonical.
+
+#### Variant: PTC-only attack via False-DA quorum
+
+**A malicious PTC majority voting `blob_data_available = False` can force EMPTY without any proposer collusion.** Same setup as above (slot 100 builder reveals valid payload, `store.payloads[B.root]` populated at every honest node), but now the malicious PTC majority votes `blob_data_available = False` (the orthogonal axis). The slot 101 proposer is honest.
+
+- Slot 101 proposer runs `get_head` → returns `(B, FULL)` (via `should_extend_payload`'s fallback (a), since no slot 101 block has been published yet).
+- Slot 101 proposer then evaluates `should_build_on_full(store, head=(B, FULL))`. A False-DA quorum exists, so `payload_data_availability(store, B.root, available=False)` returns True and `should_build_on_full` returns **False**.
+- The honest slot 101 proposer is **forced** to declare `parentStatus = EMPTY` in its bid (and build its EL payload on the EMPTY parent state).
+- After the slot 101 block lands, `should_extend_payload` at every other honest node sees: PTC primary path fails (True-DA quorum doesn't hold), fallback (a) no longer fires, fallback (b) doesn't fire (slot 101 extends B), fallback (c) doesn't fire (slot 101 declared EMPTY). EMPTY wins network-wide.
+
+**Damage bound is the same as the colluding-proposer case** — slot-100 proposer is still paid via Path B (the slot-100 beacon block was attested by the honest super-majority, easily clearing the 60% quorum). The builder is charged. The payload is not on chain.
+
+The honest builder, despite revealing timely with all blob columns broadcast, **has no defense**: by the cautious-reveal strategy (A6), reveal happens in the window $(T_{\mathrm{att}}, T_{\mathrm{ptc}})$ before the PTC has voted, so the builder cannot condition on PTC votes at reveal time. This attack is excluded under **S3** (honest PTC majority), which guarantees no False-DA quorum arises against an honest reveal.
 
 ---
 
@@ -1708,7 +1755,7 @@ In both cases the proposer receives a `BuilderPendingWithdrawal`.
 
 *Solvency precondition.* By **G-BidAdmit** condition (c) plus **G-Solvency**, the bid was admitted at slot N only after `can_builder_cover_bid` verified the builder's balance covers all outstanding obligations. Otherwise the admission assertion fails and no IOU exists.
 
-*Assumptions used:* **G-BidAdmit**, **G-Settle**, **G-PayAttest**, **G-PayEpoch**, **G-Solvency**, **`parent_remains_canonical`** (strengthening, §4 — closes the split-vote-at-slot-$N{-}1$ reorg gap that would otherwise let parent($B$) lose canonicity and take $B$'s IOU off-chain with it; the orthogonal late-prior-slot gap is excluded by P1's own 60%-honest-quorum hypothesis on $B$, so `parent_in_previous_slot` is not needed here).
+*Assumptions used:* **G-BidAdmit**, **G-Settle**, **G-PayAttest**, **G-PayEpoch**, **G-Solvency**, **`parent_remains_canonical`** (strengthening, §4 — closes the split-vote-at-slot-$N$ reorg gap that would otherwise let parent($B$) lose canonicity and take $B$'s IOU off-chain with it; the orthogonal late-prior-slot gap is excluded by P1's own 60%-honest-quorum hypothesis on $B$, so `parent_in_previous_slot` is not needed here).
 
 </details>
 
@@ -1731,11 +1778,11 @@ This weight-arithmetic argument fixes parent($B$) and rules out only competitors
 
 *Part (ii) — FULL declared on chain.* By **A1**, the honest builder reveals the same payload object whose hash was committed in the bid. By inspection of `on_execution_payload_envelope` (§5 Phase 3), every honest node that receives the payload passes `is_data_available` (the builder broadcasts the blob columns honestly) and `verify_execution_payload_envelope` (the payload's `block_hash` matches `bid.block_hash` by **A1**), and populates `store.payloads[block_root]`.
 
-By **G-Struct**, `(B, FULL)` is now a child of `(B, PENDING)` in the fork-choice tree. By the honest-PTC-majority hypothesis (**S4**) and **A4**, the slot-N+1 `should_extend_payload(B)` evaluates True via the PTC primary path: `is_payload_timely` holds (honest PTC majority voted `payload_present = True`) and `is_payload_data_available` holds (honest PTC majority voted `blob_data_available = True`). By **G-Tiebreaker**, the honest slot-N+1 proposer's `get_head` picks the FULL branch for slot N, and the proposer's bid sets `bid.parent_block_hash = bid(B).block_hash` — declaring the slot FULL on chain (§3 definition).
+By **G-Struct**, `(B, FULL)` is now a child of `(B, PENDING)` in the fork-choice tree. By the honest-PTC-majority hypothesis (**S4**) and **A4**, the slot-N+1 `should_extend_payload(B)` evaluates True via the PTC primary path: `payload_timeliness(store, B.root, timely=True)` holds (True-timeliness quorum: honest PTC majority voted `payload_present = True`) and `payload_data_availability(store, B.root, available=True)` holds (True-DA quorum: honest PTC majority voted `blob_data_available = True`). By **G-Tiebreaker**, the honest slot-N+1 proposer's `get_head` picks the FULL branch for slot N. The honest proposer then evaluates `should_build_on_full(store, head=(B, FULL))`: by **S4** + **A4**, no False-DA quorum exists (`payload_data_availability(store, B.root, available=False)` is False), so `should_build_on_full` returns True. The proposer's bid sets `bid.parent_block_hash = bid(B).block_hash` — declaring the slot FULL on chain (§3 definition).
 
 *Assumptions used:* **S1**, **S2**, **S4** (honest slot-N PTC majority + honest slot-N+1 proposer), **A1**, **A4**, **A6**, **`parent_remains_canonical`** and **`parent_in_previous_slot`** (strengthenings, §4), **G-Struct**, **G-Weight**, **G-Tiebreaker**.
 
-*Remark on adversarial fallback.* If the slot-N+1 proposer is malicious (declaring EMPTY despite the FULL gate being open), the §7 "only successful attack" can succeed under colluding PTC+proposer. In that case the payload is NOT included in the canonical chain at slot N+1, and P2 fails — but the proposer is still paid via Path B (P1) and the builder is still protected (P3). P2's guarantee requires the honest-slot-N+1-proposer hypothesis under **S4**.
+*Remark on the honest-PTC dependence.* P2 depends on **S4**'s honest-PTC hypothesis at two distinct points: (i) the PTC primary path of `should_extend_payload` requires both True-quorums (True-timeliness AND True-DA) to make FULL the tiebreaker winner; (ii) `should_build_on_full` requires the absence of a False-DA quorum to let the honest proposer build on FULL. Outside S4, the §7 attacks become available: a malicious PTC producing only a False-timeliness quorum + a colluding proposer can force EMPTY via fallback (c) failure, OR a malicious PTC producing a False-DA quorum alone can force EMPTY by triggering `should_build_on_full` to return False — even with an honest proposer. In either case the payload is not on the canonical chain at slot N+1 and P2 fails; but the proposer is still paid via Path B (P1) and the builder is still protected against being charged with no offsetting protocol-internal recovery (P3).
 
 </details>
 
@@ -1797,7 +1844,7 @@ The following table shows which assumptions each property depends on:
 | P3       | S1, S2         | A6              | G-BidAdmit, G-PayAttest, G-PayEpoch, G-Slashing           |
 | P4       | S2, S4         | —              | G-Struct, G-BlockAdmit                                    |
 
-† P1 additionally relies on the strengthening hypothesis **`parent_remains_canonical(trace, B)`** — parent(B) remains in the canonical chain of every honest validator at every step of the trace — which closes the split-vote-at-slot-$N{-}1$ reorg gap that would otherwise let parent($B$) lose canonicity (and $B$'s IOU with it) under H7's 40% reveal threshold. The orthogonal late-prior-slot gap is already excluded by P1's own 60%-honest-quorum hypothesis on $B$, so `parent_in_previous_slot` is not needed for P1.
+† P1 additionally relies on the strengthening hypothesis **`parent_remains_canonical(trace, B)`** — parent(B) remains in the canonical chain of every honest validator at every step of the trace — which closes the split-vote-at-slot-$N$ reorg gap that would otherwise let parent($B$) lose canonicity (and $B$'s IOU with it) under H7's 40% reveal threshold. The orthogonal late-prior-slot gap is already excluded by P1's own 60%-honest-quorum hypothesis on $B$, so `parent_in_previous_slot` is not needed for P1.
 
 ‡ P2 additionally relies on **both** strengthening hypotheses: `parent_remains_canonical(trace, B)` (above) and **`parent_in_previous_slot(B)`** — $B$'s parent is at slot $B.\mathrm{slot} - 1$ — which closes the late-prior-slot gap exploitable by a colluding slot-$N{-}1$ / slot-$N$ Byzantine pair (and, by extension, every multi-missing-slot variant between parent($B$) and $B$). Both are documented in §4 along with the open work to weaken them (likely by tightening A6's reveal threshold or adding a "no competing block of greater real weight at $t_{\mathrm{rev}}$" check).
 
