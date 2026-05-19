@@ -2,7 +2,7 @@
 
 This document contains the formal definitions, algorithms, and helper functions for ePBS (EIP-7732). It is the formal layer of a two-part treatment: the [overview](https://github.com/ethereum/epbs-security-analysis/blob/master/README.md) (on the `master` branch of this repository) provides a self-contained middle-layer document with abstracted code and figures; this document provides the full formal model with proofs.
 
-**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`fa8bb08`](https://github.com/ethereum/consensus-specs/commit/fa8bb08), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/master/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
+**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`4a4937b`](https://github.com/ethereum/consensus-specs/commit/4a4937b), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/master/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
 
 ## 12. Fork Choice: Model, Definitions, and Algorithms
 
@@ -16,14 +16,16 @@ This section formalizes the ePBS fork-choice rule. Ethereum's existing fork-choi
 | ------------------------ | --------------- | ------------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------ |
 | **Proposal**       | t = 0           | —                                                     | Proposer    | Broadcasts beacon block containing the builder's bid                                             |
 | **Attestation**    | t = T_att       | `ATTESTATION_DUE_BPS_GLOAS = 2500` (25%, deadline)   | Attesters   | Broadcast attestations for the beacon block                                                      |
-| **Builder reveal** | t ∈ (0, T_ptc) | —                                                     | Builder     | Broadcasts `SignedExecutionPayloadEnvelope`                                                    |
+| **Builder reveal** | t ∈ (0, T_payload_due) | `PAYLOAD_DUE_BPS = 7500` (75%, deadline)        | Builder     | Broadcasts `SignedExecutionPayloadEnvelope` strictly before `get_payload_due_ms()` for an honest PTC member to count it as `payload_present = True` |
 | **PTC vote**       | t ∈ (0, T_ptc] | `PAYLOAD_ATTESTATION_DUE_BPS = 7500` (75%, deadline) | PTC members | Broadcast payload timeliness votes within the first 75% of the slot (deadline, not exact firing) |
 
-With `SLOT_DURATION = 12s`: T_att = 3s, T_ptc = 9s. The ordering T_att < T_ptc is a fundamental design constraint: attesters vote before the builder is expected to reveal, and PTC members vote after the builder has had time to reveal. This ordering implies that same-slot attesters cannot observe the payload status at the time they vote.
+With `SLOT_DURATION = 12s`: T_att = 3s, T_payload_due = T_ptc = 9s. The ordering T_att < T_payload_due ≤ T_ptc is a fundamental design constraint: attesters vote before the builder is expected to reveal; the builder's payload must arrive (at any honest PTC member) before `T_payload_due` to be counted as timely; PTC members vote no later than T_ptc, after they have had a chance to observe arrivals.
+
+The spec separates the **payload-arrival deadline** `get_payload_due_ms()` (parameterised by `PAYLOAD_DUE_BPS`) from the **PTC-vote deadline** `get_payload_attestation_due_ms()` (parameterised by `PAYLOAD_ATTESTATION_DUE_BPS`). In the current calibration both are 7500 (75% of the slot) and therefore numerically equal, but they are conceptually distinct: the first defines what an honest PTC member counts as "timely", the second is the latest moment by which the member must broadcast its vote. Future spec revisions may move them apart.
 
 A note on the PTC entry: the spec specifies `PAYLOAD_ATTESTATION_DUE_BPS` as a *deadline*, not as an exact firing time — an honest PTC member must broadcast its vote *within the first* 75% of the slot. The Section 12.2 PTC handler models the worst-case (deadline) firing for proof-obligation simplicity, but a rational/cautious member typically waits close to T_ptc to maximise information. See the timing-semantics commentary in Section 12.2 for details.
 
-*Spec reference: timing constants in `validator.md`; `ATTESTATION_DUE_BPS_GLOAS`, `PAYLOAD_ATTESTATION_DUE_BPS` in `validator.md`.*
+*Spec reference: timing constants in `validator.md`; `ATTESTATION_DUE_BPS_GLOAS`, `PAYLOAD_DUE_BPS`, `PAYLOAD_ATTESTATION_DUE_BPS` in `validator.md`; `get_payload_due_ms`, `get_payload_attestation_due_ms` in `fork-choice.md`.*
 
 **Definition 2** (Payload status). A *payload status* is one of three values: EMPTY = 0, FULL = 1, PENDING = 2. A node with status EMPTY represents the world where the referenced block's execution payload was not revealed; FULL represents the world where it was revealed and validated; PENDING represents the entry point before the full/empty determination is made.
 
@@ -142,14 +144,18 @@ In practice, `anc` is called by `is_supporting_vote` (Definition 10, Case 2) to 
 
 *Spec reference: `is_supporting_vote` in `fork-choice.md`.*
 
-**Definition 11** (Payload timeliness). The execution payload for block with root r is *timely* if both:
+**Definition 11** (PTC quorums on payload presence and blob-data availability). For a block with root `r`, the PTC scorecards `payload_timeliness_vote[r]` and `payload_data_availability_vote[r]` give rise to four quorum predicates, each gated by local payload verification:
 
-1. `r ∈ store.payloads` (the node locally has the validated payload), and
-2. more than `PTC_SIZE / 2` entries in `payload_timeliness_vote[r]` are True.
+1. **True-timeliness quorum** — `payload_timeliness(store, r, timely=True)` returns True iff `r ∈ store.payloads` AND more than `PAYLOAD_TIMELY_THRESHOLD` entries in `payload_timeliness_vote[r]` are True.
+2. **False-timeliness quorum** — `payload_timeliness(store, r, timely=False)` returns True iff `r ∈ store.payloads` AND more than `PAYLOAD_TIMELY_THRESHOLD` entries are False.
+3. **True-DA quorum** — `payload_data_availability(store, r, available=True)` returns True iff `r ∈ store.payloads` AND more than `DATA_AVAILABILITY_TIMELY_THRESHOLD` entries in `payload_data_availability_vote[r]` are True.
+4. **False-DA quorum** — `payload_data_availability(store, r, available=False)` returns True iff `r ∈ store.payloads` AND more than `DATA_AVAILABILITY_TIMELY_THRESHOLD` entries are False.
 
-Blob data is *available* under the analogous condition on `payload_data_availability_vote[r]`.
+When the local view is missing (`r ∉ store.payloads`), each predicate falls back symmetrically to `not timely` / `not available` respectively — see the function bodies in Helpers 4 and 5.
 
-*Spec reference: `is_payload_timely`, `is_payload_data_available` in `fork-choice.md`.*
+The True-quorums on both signals are the network-wide DA witness consumed by `should_extend_payload`'s primary path (Algorithm 6 line 7). The False-DA quorum is the network-wide signal consumed by `should_build_on_full` (Algorithm 6b) to force the slot-N+1 proposer to reorg an unavailable payload.
+
+*Spec reference: `payload_timeliness`, `payload_data_availability` in `fork-choice.md`.*
 
 **Definition 12** (Weight). The *weight* of a fork-choice node `(r, s)` is:
 
@@ -169,7 +175,7 @@ Blob data is *available* under the analogous condition on `payload_data_availabi
 - If `s = EMPTY`: the tiebreaker value is 1.
 - If `s = FULL`: the tiebreaker value is 2 if `should_extend_payload(r)`, else 0.
 
-`should_extend_payload(r)` first checks the hard guard: if `is_payload_verified(store, r)` is False, it returns False immediately. Otherwise, it returns True if any of: (a) the execution payload is timely and blob data is available (Definition 11), (b) `proposer_boost_root` is the zero root, (c) `parent(B_{proposer\_boost\_root}) ≠ B_r`, (d) `is_parent_node_full(store, B_{proposer\_boost\_root})`.
+`should_extend_payload(r)` first checks the hard guard: if `is_payload_verified(store, r)` is False, it returns False immediately. Otherwise, it returns True if any of: (a) a True-timeliness quorum and a True-DA quorum both exist (Definition 11), (b) `proposer_boost_root` is the zero root, (c) `parent(B_{proposer\_boost\_root}) ≠ B_r`, (d) `is_parent_node_full(store, B_{proposer\_boost\_root})`.
 
 The effect in Regime B: when `should_extend_payload(r)` holds, FULL(2) > EMPTY(1) → FULL wins. Otherwise, EMPTY(1) > FULL(0) → EMPTY wins. Regime A is therefore a "natural-order" pass-through; Regime B is the load-bearing case where the PTC primary path and the proposer-based fallbacks resolve FULL vs EMPTY for the immediately previous slot.
 
@@ -229,7 +235,7 @@ Before presenting the fork-choice algorithms, we define how each actor in the pr
 | `slot(B)`, `parent(B)`, `state(B)`, `root(B)`, `head(chain)`, `child(chain, B)`     | Math notation: "the slot of B", "the parent block of B", "the post-state of B", "the hash tree root of B" — correspond to `B.slot`, `store.blocks[B.parent_root]`, `store.block_states[hash_tree_root(B)]`, and `hash_tree_root(B)` respectively. `head(chain)` is the head block of a canonical chain (the latest block in the sequence); `child(chain, B)` is `B`'s unique canonical child on `chain` (the block whose `parent_root` equals `B`'s hash-tree root), introduced in Definition 4b.                                                                                                                                                                                   |
 | `time_in_slot`, `T_ATT`, `T_PTC`                                                          | Client-scheduler variables abstracted from the spec deadlines `ATTESTATION_DUE_BPS_GLOAS` and `PAYLOAD_ATTESTATION_DUE_BPS` (`validator.md`); `time_in_slot` is the wall-clock offset within the current slot.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `@Upon(condition)` decorator                                                                  | Framing convention for event-driven handlers, with the informal English event syntax inside the parentheses (e.g., "received SignedBeaconBlock for current slot"). The spec describes these triggers in prose; we use `@Upon` for compactness.                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `validator` runtime object                                                                    | A client-side process-state record (distinct from the spec `Validator` container). Fields used: `validator.index` (the validator's assigned index in `state.validators`), `validator.fee_recipient` (execution-layer payment address), `validator.gas_limit` (preferred gas), `validator.wants_external_builder` (local preference flag toggled per slot).                                                                                                                                                                                                                                                                                                                                   |
+| `validator` runtime object                                                                    | A client-side process-state record (distinct from the spec `Validator` container). Fields used: `validator.index` (the validator's assigned index in `state.validators`), `validator.fee_recipient` (execution-layer payment address), `validator.target_gas_limit` (preferred gas-limit target — see `ProposerPreferences.target_gas_limit`), `validator.wants_external_builder` (local preference flag toggled per slot).                                                                                                                                                                                                                                                                                                                                   |
 | `builder` runtime object                                                                      | A client-side process-state record (distinct from the spec `Builder` container). Fields used: `builder.index` (the assigned builder index), `builder.bid_amount` (Gwei amount the builder will offer this slot), `builder.privkey` (the builder's BLS private key), `builder.stored_payload`, `builder.stored_requests` (the payload + execution-requests bundle stashed at bid time and re-used at reveal time per Lemma H3).                                                                                                                                                                                                                                                               |
 
 The @Upon handler names themselves (`attest`, `propose`, `submit_bid`, `reveal_payload`, `ptc_vote`, `broadcast_preferences`) are this document's framing for the honest behaviour described in `validator.md` and `builder.md`; they are not spec function names.
@@ -269,7 +275,8 @@ The `@Upon` guard fires at T_att (25% of the slot, i.e., 3 seconds) for every va
 ```python
 @Upon(time_in_slot == 0 and is_proposer(state, validator.index))
 def propose(validator, slot, state, store):
-    parent_root = hash_tree_root(state.latest_block_header)
+    head = get_head(store)                                          # ForkChoiceNode at the parent (non-PENDING by Lemma 3)
+    parent_root = head.root
     # Select a bid (external builder or self-build)
     bids = collect_valid_bids(state, slot)                         # From gossip + off-protocol
     if bids and validator.wants_external_builder:
@@ -286,9 +293,12 @@ def propose(validator, slot, state, store):
         finalized_block_bid = finalized_block.body.signed_execution_payload_bid.message
         finalized_block_hash = finalized_block_bid.parent_block_hash
         safe_block_hash = get_safe_execution_block_hash(store)
+        # prepare_execution_payload takes (store, head) and target_gas_limit; it
+        # internally consults should_build_on_full(store, head) to decide whether
+        # to apply apply_parent_execution_payload to a state copy.
         payload_id = prepare_execution_payload(
-            store, state, safe_block_hash, finalized_block_hash,
-            validator.fee_recipient, EXECUTION_ENGINE,
+            store, head, state, safe_block_hash, finalized_block_hash,
+            validator.fee_recipient, validator.target_gas_limit, EXECUTION_ENGINE,
         )
         payload, execution_requests, blob_kzg_commitments = EXECUTION_ENGINE.get_payload(payload_id)
         bid = ExecutionPayloadBid(
@@ -299,7 +309,7 @@ def propose(validator, slot, state, store):
             block_hash=payload.block_hash,
             prev_randao=get_randao_mix(state, get_current_epoch(state)),
             fee_recipient=validator.fee_recipient,
-            gas_limit=payload.gas_limit,
+            gas_limit=payload.gas_limit,                            # Actual gas_limit; gossip checks compatibility with target
             blob_kzg_commitments=blob_kzg_commitments,
             execution_requests_root=hash_tree_root(execution_requests),
         )
@@ -312,8 +322,8 @@ def propose(validator, slot, state, store):
         signed_execution_payload_bid=selected_bid,
         payload_attestations=aggregate_ptc_votes(slot - 1),         # PTC votes from previous slot
         parent_execution_requests=(
-            store.payloads[parent_root].execution_requests
-            if should_extend_payload(store, parent_root)
+            store.payloads[head.root].execution_requests
+            if should_build_on_full(store, head)
             else ExecutionRequests()
         ),
     )
@@ -332,12 +342,12 @@ def broadcast_preferences(validator, slot, state):
         proposal_slot=slot,
         validator_index=validator.index,
         fee_recipient=validator.fee_recipient,                     # Destination address, not a price
-        gas_limit=validator.gas_limit,                             # Preferred max gas for the payload
+        target_gas_limit=validator.target_gas_limit,               # Preferred gas-limit target (compatibility-checked at gossip)
     )
     broadcast(SignedProposerPreferences(preferences, sign(preferences)))
 ```
 
-The proposer has two event handlers. The `broadcast_preferences` handler fires before the slot for each upcoming proposal slot and is optional — without it, the gossip network will not forward any builder bids for that slot (the gossip validation rules require that preferences have been seen before forwarding a bid), so the proposer must either self-build or obtain a bid through off-protocol means. `fee_recipient` is the execution-layer address where the proposer wants to receive payment (a destination, not a price), and `gas_limit` is the proposer's preferred maximum gas. Neither field specifies a minimum bid amount; the competitive dimension is `bid.value` on the builder side.
+The proposer has two event handlers. The `broadcast_preferences` handler fires before the slot for each upcoming proposal slot and is optional — without it, the gossip network will not forward any builder bids for that slot (the gossip validation rules require that preferences have been seen before forwarding a bid), so the proposer must either self-build or obtain a bid through off-protocol means. `fee_recipient` is the execution-layer address where the proposer wants to receive payment (a destination, not a price), and `target_gas_limit` is the proposer's preferred gas-limit target; bids whose actual `gas_limit` is not compatible with this target via `is_gas_limit_target_compatible(parent_gas_limit, bid.gas_limit, target_gas_limit)` are filtered at the gossip layer. Neither field specifies a minimum bid amount; the competitive dimension is `bid.value` on the builder side.
 
 The `propose` handler fires at the beginning of the slot (t = 0). There are two paths for bid selection:
 
@@ -350,7 +360,7 @@ After selecting a bid, the proposer constructs the beacon block body via `constr
 
 #### Honest PTC Member Behavior
 
-The four lookup helpers below — `has_beacon_block_for_slot`, `get_beacon_block_root_for_slot`, `has_execution_payload_envelope`, `check_blob_data` — are pedagogical names for the corresponding inline checks in the spec prose at [`validator.md`](https://github.com/ethereum/consensus-specs/blob/master/specs/gloas/validator.md) ("Constructing a payload attestation message"). The spec uses `is_data_available(beacon_block_root)` for the blob-data check; the other three are described in prose rather than as named helpers.
+The four lookup helpers below — `has_beacon_block_for_slot`, `get_beacon_block_root_for_slot`, `has_execution_payload_envelope`, `check_blob_data` — are pedagogical names for the corresponding inline checks in the spec prose at [`validator.md`](https://github.com/ethereum/consensus-specs/blob/master/specs/gloas/validator.md) ("Constructing a payload attestation message"). The spec uses `is_data_available(beacon_block_root)` for the blob-data check; the other three are described in prose rather than as named helpers. Importantly, `has_execution_payload_envelope(store, block_root)` is shorthand for "the node received and locally validated a `SignedExecutionPayloadEnvelope` for `block_root` *strictly before* `get_payload_due_ms()` milliseconds into the slot" — the payload-arrival deadline (Definition 1) is distinct from the PTC-vote deadline.
 
 ```python
 @Upon(time_in_slot == T_PTC and validator.index in get_ptc(state, slot))
@@ -361,10 +371,11 @@ def ptc_vote(validator, slot, state, store):
     data = PayloadAttestationData()
     data.beacon_block_root = block_root
     data.slot = slot
+    # data.payload_present = True iff the envelope was observed BEFORE get_payload_due_ms()
     if has_execution_payload_envelope(store, block_root):
-        data.payload_present = True                                # (A4) report observation — builder revealed
+        data.payload_present = True                                # (A4) report observation — envelope arrived in time
     else:
-        data.payload_present = False                               # (A4) report observation — builder did not reveal
+        data.payload_present = False                               # (A4) report observation — envelope did not arrive in time
     data.blob_data_available = check_blob_data(store, block_root)  # (A4) spec: is_data_available
     msg = PayloadAttestationMessage(
         validator_index=validator.index,
@@ -382,7 +393,7 @@ The `@Upon` guard fires for validators who are PTC members for this slot. A PTC 
 
 **Lines 9–12: Payload observation.** This is the core PTC duty. The member checks whether a `SignedExecutionPayloadEnvelope` referencing this block has been seen. If yes: `payload_present = True`. If not: `payload_present = False`. The member does NOT verify the payload's execution validity — they only check whether the payload arrived on the gossip network and passed the gossip-level validation rules (correct builder index, correct block hash, valid signature). The execution engine validation happens separately in `on_execution_payload_envelope` (Algorithm 8).
 
-**Line 13: Blob data observation.** Similarly, the member reports whether the blob data associated with this block is available. Blobs are large binary data chunks (EIP-4844) used by rollups for temporary data availability. Each blob is split into 128 data columns distributed across the p2p network via subnets — no single node downloads all columns. The PTC member checks whether the columns it is responsible for arrived and pass KZG proof verification against the commitments in the builder's bid (`bid.blob_kzg_commitments`). This signal feeds into `is_payload_data_available` (Helper 5), which is checked alongside `is_payload_timely` in the PTC primary path of `should_extend_payload` (Algorithm 6, line 6). Both must pass for the tiebreaker to favor FULL.
+**Line 13: Blob data observation.** Similarly, the member reports whether the blob data associated with this block is available. Blobs are large binary data chunks (EIP-4844) used by rollups for temporary data availability. Each blob is split into 128 data columns distributed across the p2p network via subnets — no single node downloads all columns. The PTC member checks whether the columns it is responsible for arrived and pass KZG proof verification against the commitments in the builder's bid (`bid.blob_kzg_commitments`). This signal feeds into `payload_data_availability` (Helper 5), which is checked alongside `payload_timeliness` in the PTC primary path of `should_extend_payload` (Algorithm 6, line 6). Both must pass for the tiebreaker to favor FULL.
 
 **Why witness statements, not validity judgments?** Requiring PTC members to validate the execution payload would put the execution engine on the critical path of the PTC vote — a 512-member committee that must vote within a tight window. By making PTC votes observational, the protocol decouples the timeliness question ("did the payload arrive?") from the validity question ("is the payload correct?"). Validity is checked asynchronously by each node's execution engine when it runs `verify_execution_payload_envelope` (Helper 12). The fork-choice tree structure enforces validity separately: even if all 512 PTC members vote `payload_present = True`, the FULL branch only exists if `store.payloads` is populated (Lemma 1), which requires the execution engine to accept the payload.
 
@@ -649,31 +660,63 @@ This function computes the total attestation weight behind a fork-choice node (r
 ```python
 def should_extend_payload(store, root):
     if not is_payload_verified(store, root):
-        return False                                               # Hard guard: payload must exist
+        return False                                                       # Hard guard: payload must exist locally
     proposer_root = store.proposer_boost_root
+    payload_is_timely = payload_timeliness(store, root, timely=True)
+    payload_data_is_available = payload_data_availability(store, root, available=True)
     return (
-        (is_payload_timely(store, root) and is_payload_data_available(store, root))
-        or proposer_root == Root()                                 # No block yet: default FULL
-        or store.blocks[proposer_root].parent_root != root         # Boost is for another branch
-        or is_parent_node_full(store, store.blocks[proposer_root]) # Boost block declares parent FULL
+        (payload_is_timely and payload_data_is_available)                  # PTC primary path
+        or proposer_root == Root()                                         # (a) no block yet: default FULL
+        or store.blocks[proposer_root].parent_root != root                 # (b) boost is for another branch
+        or is_parent_node_full(store, store.blocks[proposer_root])         # (c) boost block declares parent FULL
     )
 ```
 
 This function decides whether the fork-choice tiebreaker (Definition 13) should favor FULL over EMPTY for the immediately previous slot's block. It is called only when the zero-return rule (Algorithm 5, lines 3–4) applies — meaning attestation weight is 0 for both FULL and EMPTY — so this function is the sole decision-maker for the most recent block's execution payload status.
 
-**Line 2–3: Hard guard.** Before any PTC or fallback logic, the function checks `is_payload_verified(store, root)` — i.e., whether `root ∈ store.payloads`. If the payload was never received or failed verification, the function returns False immediately and the tiebreaker favors EMPTY. This hard guard is the outermost gate: no amount of PTC votes or fallback conditions can override it. It ensures that `should_extend_payload` never returns True for a payload that the local node has not verified.
+**Lines 2–3: Hard guard (local view).** Before any PTC or fallback logic, the function checks `is_payload_verified(store, root)` — i.e., whether `root ∈ store.payloads`. By the body of `on_execution_payload_envelope` (Algorithm 8), `root ∈ store.payloads` iff this node has received the envelope, locally passed `is_data_available` (i.e., the **local** blob-DA check on the columns this node sampled), and locally validated the execution payload via the execution engine. If any of those failed, the function returns False immediately and the tiebreaker favors EMPTY. This hard guard is the outermost gate: no amount of PTC votes or fallback conditions can override it. It ensures that `should_extend_payload` never returns True for a payload that the local node has not fully validated.
 
-**Line 6: The PTC primary path.** If the PTC voted that the execution payload is timely (more than half of PTC members voted `payload_present = True`) and the blob data is available (`is_payload_data_available`), the function returns True — the payload was delivered on time, so FULL should win.
+**Line 7: PTC primary path (network-wide view).** If a True-timeliness quorum exists (a majority of PTC members voted `payload_present = True`, evaluated by `payload_timeliness(store, root, timely=True)`) **and** a True-DA quorum exists (a majority voted `blob_data_available = True`, evaluated by `payload_data_availability(store, root, available=True)`), the function returns True — the payload was delivered on time across the network, so FULL should win.
 
-**Lines 7–9: Fallback conditions.** These handle cases where the PTC did not reach a positive majority, but the protocol can still infer that FULL is the correct choice. Each condition independently returns True:
+**Lines 8–10: Fallback conditions.** These handle cases where the PTC did not reach a True-quorum on both signals, but the protocol can still infer that FULL is the correct choice. Each condition independently returns True:
 
-- Line 7: No block has been received yet for the current slot (`proposer_boost_root` is the zero root). Defaulting to FULL gives the builder more time to deliver before the next proposer commits to the EMPTY path.
-- Line 8: A block was received, but it is not a child of the block in question — it is on a different branch entirely. The PTC vote is irrelevant to this branch.
-- Line 9: A block was received, it is a child of this block, and it declares that it built on the FULL version (`is_parent_node_full`). The next proposer already committed to FULL, so the tiebreaker should agree.
+- Line 8 (fallback (a)): No block has been received yet for the current slot (`proposer_boost_root` is the zero root). Defaulting to FULL gives the builder more time to deliver before the next proposer commits to the EMPTY path.
+- Line 9 (fallback (b)): A block was received, but it is not a child of the block in question — it is on a different branch entirely. The PTC vote is irrelevant to this branch.
+- Line 10 (fallback (c)): A block was received, it is a child of this block, and it declares that it built on the FULL version (`is_parent_node_full`). The next proposer already committed to FULL, so the tiebreaker should agree.
 
-These fallbacks limit the damage a malicious PTC can cause (see the adversarial table in Section 12.4): even if every PTC member lies and votes against a valid execution payload, the FULL path often still wins through conditions 7–9.
+These fallbacks limit the damage a malicious PTC can cause on the timeliness signal alone: even if a malicious PTC majority produces a False-timeliness quorum against a valid execution payload, the FULL path often still wins through conditions 8–10 — provided no False-DA quorum exists (see Algorithm 6b below for the strict DA-check imposed on the proposer).
+
+**Local DA vs network-wide DA.** Two distinct DA signals operate here. **Local DA** (the per-node `is_data_available` check inside `on_execution_payload_envelope`, gated above by `is_payload_verified`) reflects only the columns *this* node sampled. **Network-wide DA** (`payload_data_availability(..., available=True)` for True-quorum, `..., available=False` for False-quorum) aggregates the PTC's collective votes. Under PeerDAS asymmetric sampling, the two can disagree — a malicious builder may selectively seed columns to the slot-N+1 proposer while withholding from PTC members. `should_extend_payload`'s hard guard is local; its PTC primary path is network-wide.
+
+**Which fallback is live for which actor.** Fallbacks (b) and (c) dereference `store.blocks[proposer_root]` and therefore require `proposer_root != Root()`. So for the slot-N+1 proposer's *own* `get_head` at construction time — when `on_tick_per_slot` has just reset `proposer_boost_root` to `Root()` — only the PTC primary path and **fallback (a)** are reachable. The proposer defaults to FULL via fallback (a) whenever the PTC primary path doesn't fire (modulo the `should_build_on_full` constraint of Algorithm 6b). Fallbacks (b) and (c) become live afterward, when every other honest node runs `get_head` against the now-broadcast slot-N+1 block — the proposer's `parentStatus` declaration is what triggers fallback (c) for the rest of the network.
 
 *Spec reference: `should_extend_payload` in `fork-choice.md`.*
+
+#### Algorithm 6b: should_build_on_full
+
+```python
+def should_build_on_full(store, head):
+    assert head.payload_status != PAYLOAD_STATUS_PENDING
+    if head.payload_status == PAYLOAD_STATUS_EMPTY:
+        return False
+    return not payload_data_availability(store, head.root, available=False)
+```
+
+This function is consulted *only by the slot-N+1 proposer* at block-construction time, on the head returned by `get_head(store)`. It imposes a strict DA constraint that complements `should_extend_payload`: if the PTC has produced a **False-DA quorum** for the head block (i.e., a majority voted `blob_data_available = False`), the function returns False and the proposer is required to build on the EMPTY parent state — even if `get_head` placed the head at FULL via `should_extend_payload`'s fallback paths, and even if the proposer's own local copy of the payload passes verification.
+
+**Line 2: Precondition.** Asserts that the head is not PENDING. The proposer calls this after `get_head` has fully traversed the tree to a non-PENDING leaf — see Algorithm 1.
+
+**Line 3: EMPTY head.** If `get_head` selected the EMPTY variant of the head block, building on FULL is structurally impossible.
+
+**Line 4: False-DA quorum check.** Returns True iff no False-DA quorum exists — i.e., `payload_data_availability(store, head.root, available=False)` returns False (fewer than `DATA_AVAILABILITY_TIMELY_THRESHOLD` PTC members voted False on `blob_data_available`). When a False-DA quorum *does* exist, the function returns False and the proposer must reorg the payload.
+
+**Two call sites in `validator.md`.** The slot-N+1 proposer consults `should_build_on_full` at two specific points when constructing its block:
+- **`parent_execution_requests` construction**: if True, the proposer includes `store.payloads[head.root].execution_requests` in its block body; if False, the block body's `parent_execution_requests` is set to `ExecutionRequests()`.
+- **`prepare_execution_payload`**: if True, the proposer applies `apply_parent_execution_payload` to a copy of the state before computing withdrawals, and sets `head_block_hash = parent_bid.block_hash`; if False, the proposer builds on the parent's EMPTY variant.
+
+**Why both `should_extend_payload` and `should_build_on_full`.** `should_extend_payload` is the universal fork-choice tiebreaker — consumed by every node's `get_head` to choose between sibling `(B, FULL)` / `(B, EMPTY)` nodes. `should_build_on_full` is a proposer-only strict check that fires *after* `get_head` has returned, and it can override `get_head`'s FULL determination when a False-DA quorum is present. The asymmetry: `should_extend_payload` uses PTC's **True**-quorums on both signals, permissive with fallbacks; `should_build_on_full` uses PTC's **False**-DA quorum, strict and without fallbacks. Under honest PTC majority (Assumption H7 / S3 in the overview), no False-DA quorum arises against an honestly revealed payload, so `should_build_on_full` returns True and the proposer is free to extend FULL.
+
+*Spec reference: `should_build_on_full` in `fork-choice.md`. Called from `validator.md`: the parent-execution-requests construction (§"Parent execution requests") and `prepare_execution_payload` (§"ExecutionPayload").*
 
 #### Algorithm 7: on_block
 
@@ -774,13 +817,13 @@ def on_payload_attestation_message(store, msg, is_from_block):
         store.payload_data_availability_vote[root][idx] = msg.data.blob_data_available
 ```
 
-This function is called when a PTC member's vote arrives (constructed as described in Section 12.2, PTC Member Behavior), either from the gossip network (during the current slot) or from a block that included aggregated PTC attestations from the previous slot. PTC votes do not carry attestation weight — they do not appear in `get_weight` (Algorithm 5). Instead, they populate the PTC scorecard (`payload_timeliness_vote`, `payload_data_availability_vote`) that feeds into `is_payload_timely` (Definition 11), which feeds into `should_extend_payload` (Algorithm 6), which feeds into the tiebreaker (Definition 13). The chain of influence is: PTC vote → scorecard → timeliness check → tiebreaker → FULL vs. EMPTY decision for the immediately previous slot.
+This function is called when a PTC member's vote arrives (constructed as described in Section 12.2, PTC Member Behavior), either from the gossip network (during the current slot) or from a block that included aggregated PTC attestations from the previous slot. PTC votes do not carry attestation weight — they do not appear in `get_weight` (Algorithm 5). Instead, they populate the PTC scorecard (`payload_timeliness_vote`, `payload_data_availability_vote`) that feeds into `payload_timeliness` (Definition 11), which feeds into `should_extend_payload` (Algorithm 6), which feeds into the tiebreaker (Definition 13). The chain of influence is: PTC vote → scorecard → timeliness check → tiebreaker → FULL vs. EMPTY decision for the immediately previous slot.
 
 **Lines 2–11: Validation.** The vote must reference a known block (line 3), the vote's slot must match the block's slot (line 5), and the voter must occupy at least one PTC position for that slot (lines 7–11). Because `compute_balance_weighted_selection` (Helper 30) samples with replacement, a single validator can hold multiple PTC slots; we collect every position the voter holds into `ptc_indices`.
 
 **Lines 12–18: Source distinction.** Votes arrive from two sources: gossip (broadcast by PTC members during the slot) and block inclusion (aggregated by the next proposer). Gossip-received votes (`is_from_block = False`) are subject to additional checks: the vote must be for the current slot — stale PTC votes are rejected — and the signature must be valid via `is_valid_indexed_payload_attestation`. Block-included votes skip these checks because block processing already validated them.
 
-**Lines 19–21: Scorecard update.** The voter's `payload_present` and `blob_data_available` signals are written into *every* PTC position the voter holds. Once enough entries are True (more than `PTC_SIZE / 2`), `is_payload_timely` returns True and the tiebreaker favors FULL.
+**Lines 19–21: Scorecard update.** The voter's `payload_present` and `blob_data_available` signals are written into *every* PTC position the voter holds. Once enough entries are True (more than `PTC_SIZE / 2`), `payload_timeliness` returns True and the tiebreaker favors FULL.
 
 *Spec reference: `on_payload_attestation_message` in `fork-choice.md`.*
 
@@ -1053,7 +1096,7 @@ This is the honest-case correctness property: when the builder delivers via caut
 
 Since `slot(B) + 1 = N + 1 = current_slot`, by Lemma 4, `get_weight(store, (r, FULL)) = 0` and `get_weight(store, (r, EMPTY)) = 0`. Both weights are equal. Both nodes have the same root r. The selection at Algorithm 1 lines 8–10 therefore falls to the tiebreaker (Definition 13).
 
-For (r, FULL): since `s = FULL` and `slot(B) + 1 = current_slot`, Definition 13 evaluates `should_extend_payload(store, r)`. The hard guard at Algorithm 6 line 2 passes (`is_payload_verified(store, r)` is true by (1)). At line 6: `is_payload_timely(store, r)` and `is_payload_data_available(store, r)` both hold by (2). `should_extend_payload` returns True via the PTC primary path. The tiebreaker assigns FULL priority 2.
+For (r, FULL): since `s = FULL` and `slot(B) + 1 = current_slot`, Definition 13 evaluates `should_extend_payload(store, r)`. The hard guard at Algorithm 6 line 2 passes (`is_payload_verified(store, r)` is true by (1)). At line 7: `payload_timeliness(store, r, timely=True)` (True-timeliness quorum) and `payload_data_availability(store, r, available=True)` (True-DA quorum) both hold by (2). `should_extend_payload` returns True via the PTC primary path. The tiebreaker assigns FULL priority 2.
 
 For (r, EMPTY): Definition 13 assigns priority 1.
 
@@ -1186,13 +1229,13 @@ The following lemmas formalize each stage.
 
 **Lemma 9** (Path A: builder reveals implies payment in next block). *If an honest builder reveals a valid execution payload via the cautious strategy (Assumption H7) for a block at slot N with bid.value > 0, and a subsequent block at slot M > N declares parentStatus = FULL for block N, then `process_parent_execution_payload` (Helper 12c) settles the builder payment via `settle_builder_payment` (Helper 12a), queuing a BuilderPendingWithdrawal for the proposer and clearing the pending payment entry. Furthermore, under H7, the strengthening hypotheses H8 ($\mathit{parent}(B)$ stays canonical) and H9 ($\mathit{parent}(B).\mathit{slot} = N - 1$), and assuming an honest slot-N+1 proposer, M = N + 1 — the FULL declaration happens at the immediately next slot.*
 
-This is the "happy path": the builder delivered cautiously, and the next block applies the parent's execution effects, which includes settling the payment. H7 is what makes Path A *fire* (not just *would fire if some block declared FULL*) — it ensures that the slot-N+1 honest proposer's `should_extend_payload` returns True and that the block survives any boost-only reorg attempt (Lemma 7, Part (b)).
+This is the "happy path": the builder delivered cautiously, and the next block applies the parent's execution effects, which includes settling the payment. H7 is what makes Path A *fire* (not just *would fire if some block declared FULL*) — it ensures that the slot-N+1 honest proposer's `get_head` selects `(r, FULL)` (via `should_extend_payload`'s PTC primary path or fallback), that `should_build_on_full(store, head)` returns True (under honest PTC, no False-DA quorum can arise), and that the block survives any boost-only reorg attempt (Lemma 7, Part (b)).
 
 *Proof.* By Lemma H3 (bid-reveal consistency), the honest builder's revealed execution payload has `payload.block_hash == bid.block_hash`. Therefore, `verify_execution_payload_envelope` (Helper 12) does not fail at line 16 (`assert payload.block_hash == bid.block_hash`). Assuming all other assertions pass, `on_execution_payload_envelope` (Algorithm 8) stores the payload in `store.payloads[root]`, enabling the FULL node.
 
 When block M arrives and declares `parentStatus = FULL` for block N, `on_block` (Algorithm 7) verifies `is_payload_verified(store, N.root)` (line 5) — which holds because the payload was stored. The state transition calls `process_block` (Helper 11), whose first step is `process_parent_execution_payload` (Helper 12c). Since `bid.parent_block_hash == parent_bid.block_hash` (the block declares FULL), the function calls `apply_parent_execution_payload` (Helper 12b). Inside, `settle_builder_payment` (Helper 12a) is called with the appropriate payment index. The pending entry was created by `process_execution_payload_bid` (Helper 8, lines 17–26) during block N's processing, with `payment.withdrawal.amount = bid.value > 0`. `settle_builder_payment` queues the payment (line 4) and clears the entry (line 5), preventing double payment at the epoch boundary.
 
-For the second claim (M = N + 1), assume the slot-N+1 proposer is honest. By H7, B has ≥ 40% real attestation weight at payload-broadcast time. By Lemma 7 Part (b), no boost-only reorg can happen at slot N+1. The honest slot-N+1 proposer therefore runs `get_head`, which selects (r, FULL) (Lemma 7 Part (a)), and proposes its block extending B-FULL. The proposer's `propose` handler (Section 12.2, lines 26–30) sets `body.parent_execution_requests = store.payloads[r].execution_requests` because `should_extend_payload(store, r)` returned True. The slot-N+1 block thus declares `parentStatus = FULL` for B, and the proof above applies with M = N + 1. ∎
+For the second claim (M = N + 1), assume the slot-N+1 proposer is honest. By H7, B has ≥ 40% real attestation weight at payload-broadcast time. By Lemma 7 Part (b), no boost-only reorg can happen at slot N+1. The honest slot-N+1 proposer therefore runs `get_head`, which selects (r, FULL) (Lemma 7 Part (a)) and returns `head = (r, FULL)`. Before constructing its block body, the proposer evaluates `should_build_on_full(store, head)` (Algorithm 6b): `head.payload_status = FULL` (so the EMPTY guard at line 3 does not fire); by hypothesis (2) of Lemma 7, the PTC has a True-DA quorum on B (i.e., more than `DATA_AVAILABILITY_TIMELY_THRESHOLD` entries of `payload_data_availability_vote[r]` are True), which directly implies that **no** False-DA quorum exists (at most `PTC_SIZE - True_count < PTC_SIZE/2` entries are False), so `payload_data_availability(store, r, available=False)` returns False at Algorithm 6b line 4. Hence `should_build_on_full` returns True. The proposer's `propose` handler (Section 12.2) then sets `body.parent_execution_requests = store.payloads[r].execution_requests`. The slot-N+1 block thus declares `parentStatus = FULL` for B, and the proof above applies with M = N + 1. ∎
 
 ---
 
@@ -1283,16 +1326,18 @@ The spec does not block `initiate_builder_exit` while $\mathcal{P}_i$ is non-emp
 
 The properties proved so far assume that the relevant actors follow the protocol. In practice, any subset of validators, PTC members, builders, or proposers may be Byzantine — deviating arbitrarily from the honest behavior specified in Section 12.2. This section establishes what the protocol guarantees *despite* such deviations. The key insight is that different actors have different attack surfaces, and the protocol's layered design limits the damage each can cause.
 
-The interaction between the PTC and the next-slot proposer is central to understanding the adversarial landscape. The FULL/EMPTY tiebreaker for the immediately previous slot (Definition 13) is resolved by `should_extend_payload` (Algorithm 6), which first checks the hard guard (`is_payload_verified`, line 2), then the PTC primary path (line 6: `is_payload_timely and is_payload_data_available`), and then falls through to proposer-based fallbacks (lines 7–9). The following table provides a comprehensive analysis of all adversarial combinations. The first four rows cover the case where the builder **delivered** a valid execution payload (`r ∈ store.payloads`); the last four cover the case where the builder **withheld** (`r ∉ store.payloads`).
+The interaction between the PTC and the next-slot proposer is central to understanding the adversarial landscape. The FULL/EMPTY tiebreaker for the immediately previous slot (Definition 13) is resolved by `should_extend_payload` (Algorithm 6), which first checks the hard guard (`is_payload_verified`, line 2), then the PTC primary path (line 7: True-timeliness quorum AND True-DA quorum), and then falls through to proposer-based fallbacks (lines 8–10). Independently, the slot-N+1 proposer additionally consults `should_build_on_full` (Algorithm 6b) before constructing its block: a **False-DA quorum** forces the honest proposer to declare `parentStatus = EMPTY` regardless of what `get_head` returned. The following table provides a comprehensive analysis of all adversarial combinations. The first six rows cover the case where the builder **delivered** a valid execution payload (`r ∈ store.payloads`) — split by the PTC's two-dimensional vote on `payload_present` (timeliness) and `blob_data_available` (DA) — and the last four cover the case where the builder **withheld** (`r ∉ store.payloads`).
 
 **Payload delivered** (`r ∈ store.payloads`, FULL node exists):
 
-| PTC                     | Next-slot proposer         | Outcome         | Mechanism                                                                                                                                                                              |
-| ----------------------- | -------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Honest (votes True)     | Honest (declares FULL)     | FULL            | PTC primary path confirms; fallbacks also agree                                                                                                                                        |
-| Honest (votes True)     | Malicious (declares EMPTY) | FULL            | **PTC primary path overrides** the proposer's false EMPTY declaration                                                                                                            |
-| Malicious (votes False) | Honest (declares FULL)     | FULL            | Proposer sees `proposer_boost_root` is zero → fallback (a); attesters see proposer declares FULL → fallback (c) (Lemma 14)                                                         |
-| Malicious (votes False) | Malicious (declares EMPTY) | **EMPTY** | **Only successful attack.** PTC primary path fails (PTC lied) and all fallbacks fail (proposer declared EMPTY). Recovery requires honest proposer in subsequent slot. (Lemma 17) |
+| PTC `payload_present` (timeliness) | PTC `blob_data_available` (DA) | Slot N+1 proposer | Outcome | Mechanism |
+| --- | --- | --- | --- | --- |
+| True-timeliness quorum | True-DA quorum | Honest (declares FULL) | FULL | PTC primary path AND fallback (c) confirm |
+| True-timeliness quorum | True-DA quorum | Malicious (declares EMPTY) | FULL | PTC primary path overrides the proposer's false EMPTY |
+| False-timeliness quorum | True-DA quorum | Honest (declares FULL) | FULL | Primary fails on timeliness, but fallback (c) saves; `should_build_on_full` is happy (no False-DA quorum) |
+| False-timeliness quorum | True-DA quorum | Malicious (declares EMPTY) | **EMPTY** | Primary path and all fallbacks fail — colluding "PTC + proposer" attack on timeliness (Lemma 17) |
+| any timeliness | **False-DA quorum** | Honest (forced EMPTY) | **EMPTY** | `should_build_on_full` (Algorithm 6b) returns False — honest proposer **MUST** declare EMPTY (Lemma 14b) |
+| any timeliness | **False-DA quorum** | Malicious (declares EMPTY) | **EMPTY** | Same as honest-proposer row above — no collusion needed |
 
 **Payload NOT delivered** (`r ∉ store.payloads`, FULL node does not exist):
 
@@ -1305,10 +1350,11 @@ The interaction between the PTC and the next-slot proposer is central to underst
 
 **Key takeaways:**
 
-1. **The PTC exists to defend against a single malicious proposer.** Without PTC, a malicious proposer could force EMPTY by declaring it (row 4 of the first table would also apply to row 2). With PTC, the honest PTC majority overrides the malicious proposer via the primary path of `should_extend_payload`.
-2. **The only successful attack requires two colluding parties**: a PTC majority voting False AND a malicious proposer declaring EMPTY. Even then, the damage is bounded (Lemma 17): `store.payloads` persists, the builder still gets paid (Path A), and honest proposers in subsequent slots can recover by building on B-FULL.
+1. **The PTC's authority is bidirectional.** Through the PTC primary path of `should_extend_payload`, an honest PTC majority overrides a malicious proposer's false EMPTY declaration. Through `should_build_on_full`, a False-DA quorum overrides an honest proposer's local view and forces EMPTY — even when the proposer's `is_payload_verified` passes.
+2. **Two distinct paths force EMPTY against an honestly delivered payload.** (i) A False-timeliness quorum + a colluding proposer — fallback (c) of `should_extend_payload` fails because the proposer declares EMPTY (row 4). (ii) A False-DA quorum alone — `should_build_on_full` strips the proposer's discretion (row 5). Under **S3** (honest PTC majority), neither False-quorum arises against an honest reveal, so honest builders are protected. Outside S3, the False-DA path requires no proposer collusion.
 3. **PTC cannot create FULL nodes.** Regardless of PTC votes, the FULL node exists only if `store.payloads` is populated, which requires the execution engine to validate the execution payload (Lemma 1). A malicious PTC voting True for a withheld or invalid execution payload has zero effect — the bottom four rows all resolve to EMPTY.
-4. **`store.payloads` is the hard gate; PTC is the soft signal.** Branch existence is controlled by execution validity (`store.payloads`). The PTC only influences which existing branch the tiebreaker favors. This layered design means the PTC can be Byzantine without compromising the integrity of the fork-choice tree structure — only the tiebreaker resolution is affected.
+4. **`store.payloads` is the hard gate; PTC is the soft signal.** Branch existence is controlled by execution validity (`store.payloads`). The PTC influences the tiebreaker (via `should_extend_payload`) and the proposer's construction step (via `should_build_on_full`), but never creates branches. This layered design separates structural integrity of the fork-choice tree from the PTC's role as DA witness.
+5. **Local DA vs network-wide DA.** The hard guard `is_payload_verified` reflects the **local** node's DA sampling (per-node `is_data_available` inside `on_execution_payload_envelope`). The PTC's `True-DA` and `False-DA` quorums reflect the **network-wide** view aggregated from PTC members' independent samples. Under PeerDAS, the two can disagree (a malicious builder may selectively seed columns to the proposer while withholding from PTC members); `should_build_on_full` resolves the conflict in favor of the network-wide signal.
 
 ---
 
@@ -1318,31 +1364,52 @@ Even if all 512 PTC members are Byzantine and unanimously vote `payload_present 
 
 *Proof.* By Lemma 1, (r, FULL) is a child of (r, PENDING) if and only if `r ∈ store.payloads`. By Algorithm 8 (on_execution_payload_envelope), `store.payloads[r]` is written only at line 7, which is reached only after `verify_execution_payload_envelope` completes successfully at line 6. If the execution payload is invalid, `verify_execution_payload_envelope` fails at one of its assertions (beacon block consistency, bid consistency, execution engine validation) and line 7 of Algorithm 8 is never reached. If the execution payload is never revealed, Algorithm 8 is never called at all. In either case, `r ∉ store.payloads`, and by Lemma 1 the FULL child does not exist.
 
-PTC votes are stored in `store.payload_timeliness_vote[r]` (Algorithm 9, line 13), which is read by `is_payload_timely` (Helper 4) and `should_extend_payload` (Algorithm 6). However, `should_extend_payload` is called by the tiebreaker (Definition 13) only to decide between FULL and EMPTY children that already exist. Since (r, FULL) does not exist, `get_node_children` (Algorithm 2, lines 3–7) returns only {(r, EMPTY)}, the tiebreaker is never consulted for this block, and `get_head` (Algorithm 1) proceeds down the EMPTY path. ∎
+PTC votes are stored in `store.payload_timeliness_vote[r]` (Algorithm 9, line 13), which is read by `payload_timeliness` (Helper 4) and `should_extend_payload` (Algorithm 6). However, `should_extend_payload` is called by the tiebreaker (Definition 13) only to decide between FULL and EMPTY children that already exist. Since (r, FULL) does not exist, `get_node_children` (Algorithm 2, lines 3–7) returns only {(r, EMPTY)}, the tiebreaker is never consulted for this block, and `get_head` (Algorithm 1) proceeds down the EMPTY path. ∎
 
 *Remark.* This is a stronger result than Lemma 6 (which assumed the builder withholds). Lemma 13 covers the case where the builder actively reveals an *invalid* execution payload. The protection is the same: `store.payloads` is the sole gatekeeper, and it requires execution engine approval. This separation between the PTC (observational, gossip-level) and `store.payloads` (validity-enforcing, execution-level) is a fundamental design property of ePBS.
 
 ---
 
-**Lemma 14** (Malicious PTC cannot force EMPTY for a valid execution payload — bounded by fallbacks). *Let B be a block with root r at slot N. Assume: (1) the builder reveals a valid execution payload, so that r ∈ store.payloads; (2) at least PTC_SIZE / 2 = 256 out of 512 PTC members vote payload_present = False, so that sum(True votes) ≤ 256 and `is_payload_timely` fails (Helper 4 returns True only if sum > PAYLOAD_TIMELY_THRESHOLD = 256). Then, when get_head is executed at slot N + 1, should_extend_payload(store, r) still returns True if any of the following holds:*
+**Lemma 14** (False-timeliness quorum without False-DA quorum cannot force EMPTY against an honest proposer — bounded by fallbacks). *Let B be a block with root r at slot N. Assume: (1) the builder reveals a valid execution payload, so that r ∈ store.payloads; (2) a False-timeliness quorum exists — at least PTC_SIZE / 2 = 256 out of 512 PTC members vote `payload_present = False`, so that `payload_timeliness(store, r, timely=True)` returns False (Helper 4 returns True only if `sum > PAYLOAD_TIMELY_THRESHOLD = 256`); (3) no False-DA quorum exists — `payload_data_availability(store, r, available=False)` returns False (so `should_build_on_full` of Algorithm 6b returns True for any FULL head). Then, when get_head is executed at slot N + 1, `should_extend_payload(store, r)` still returns True if any of the following holds:*
 
 - *(a) No block has been proposed in slot N + 1 (proposer_boost_root is the zero root).*
 - *(b) A block has been proposed in slot N + 1 but it is not a child of B (boost_block.parent_root ≠ r).*
 - *(c) A block has been proposed in slot N + 1 that is a child of B and declares parentStatus = FULL.*
 
-The PTC timeliness check (Helper 4) requires a strict majority: more than `PAYLOAD_TIMELY_THRESHOLD` votes for `payload_present = True`. If this majority is not reached — whether because Byzantine PTC members lied, or because some honest members genuinely did not observe the payload due to network delays — the primary path of `should_extend_payload` fails. However, the fallback conditions in Algorithm 6 (lines 7–9) provide three independent paths to FULL that bypass PTC votes entirely. A PTC failure can only force EMPTY when *none* of these fallbacks apply — which requires a specific combination: a block was proposed in slot N+1, it is a child of B, and it declares EMPTY.
+The PTC timeliness check (Helper 4) requires a strict majority on `payload_present = True`. If this True-timeliness quorum is not reached — whether because Byzantine PTC members lied, or because some honest members genuinely did not observe the payload by `get_payload_due_ms()` due to network delays — the primary path of `should_extend_payload` fails. However, the fallback conditions in Algorithm 6 (lines 8–10) provide three independent paths to FULL that bypass PTC votes entirely. As long as no False-DA quorum exists (hypothesis (3), so `should_build_on_full` does not strip the honest proposer's discretion — see Lemma 14b for that orthogonal case), a False-timeliness quorum can only force EMPTY when *none* of these fallbacks apply — which requires a specific combination: a block was proposed in slot N+1, it is a child of B, and it declares EMPTY.
 
-*Proof.* The hard guard at Algorithm 6 line 2 passes because `is_payload_verified(store, r)` is True by assumption (1). By assumption (2), `sum(store.payload_timeliness_vote[r]) ≤ PTC_SIZE / 2`. By Helper 4 (`is_payload_timely`), the timeliness check fails. The PTC primary path at line 6 evaluates to False, and the function does not return True via it.
+*Proof.* The hard guard at Algorithm 6 line 2 passes because `is_payload_verified(store, r)` is True by assumption (1). By assumption (2), `sum(store.payload_timeliness_vote[r] is True) ≤ PTC_SIZE / 2`. By Helper 4 (`payload_timeliness`), `payload_timeliness(store, r, timely=True)` returns False. The PTC primary path at line 7 evaluates to False (the conjunction with `payload_data_availability(..., available=True)` cannot save it), and the function does not return True via it.
 
 The function then evaluates the remaining fallback conditions in the disjunction:
 
-- **Line 7:** If `proposer_boost_root` is the zero root (no block proposed in slot N+1), return True. This is condition (a).
-- **Line 8:** If `store.blocks[proposer_boost_root].parent_root != root` (the proposed block is not a child of B), return True. This is condition (b).
-- **Line 9:** If `is_parent_node_full(store, store.blocks[proposer_boost_root])` (the proposed block declares its parent was FULL), return True. This is condition (c).
+- **Line 8:** If `proposer_boost_root` is the zero root (no block proposed in slot N+1), return True. This is condition (a).
+- **Line 9:** If `store.blocks[proposer_boost_root].parent_root != root` (the proposed block is not a child of B), return True. This is condition (b).
+- **Line 10:** If `is_parent_node_full(store, store.blocks[proposer_boost_root])` (the proposed block declares its parent was FULL), return True. This is condition (c).
 
-In each of these cases, `should_extend_payload` returns True despite the PTC voting False. By Definition 13, the tiebreaker assigns FULL priority 2 and EMPTY priority 1, so `get_head` selects (r, FULL).
+In each of these cases, `should_extend_payload` returns True despite the False-timeliness quorum. By Definition 13, the tiebreaker assigns FULL priority 2 and EMPTY priority 1, so `get_head` selects (r, FULL).
 
-The only scenario where `should_extend_payload` returns False is when either the hard guard fails (`is_payload_verified` returns False — the payload was never verified locally) or all of the following hold simultaneously: the payload is verified but a block was proposed in slot N+1 (`proposer_boost_root ≠ Root()`), it is a child of B (`boost_block.parent_root == r`), and it declares `parentStatus = EMPTY`. The latter case requires the slot N+1 proposer to actively collude with the PTC by choosing the EMPTY path despite having access to the valid execution payload. ∎
+The only scenario where `should_extend_payload` returns False is when either the hard guard fails (`is_payload_verified` returns False — the payload was never verified locally) or all of the following hold simultaneously: the payload is verified but a block was proposed in slot N+1 (`proposer_boost_root ≠ Root()`), it is a child of B (`boost_block.parent_root == r`), and it declares `parentStatus = EMPTY`. The latter case requires the slot N+1 proposer to actively collude with the PTC by choosing the EMPTY path despite having access to the valid execution payload (this is Lemma 17's setting). ∎
+
+---
+
+**Lemma 14b** (False-DA quorum alone forces EMPTY — no proposer collusion required). *Let B be a block with root r at slot N. Assume: (1) the builder reveals a valid execution payload, so that r ∈ store.payloads; (2) a False-DA quorum exists — `payload_data_availability(store, r, available=False)` returns True (a majority of PTC members voted `blob_data_available = False`); (3) the slot N+1 proposer is honest. Then the slot-N+1 block declares `parentStatus = EMPTY` for B, and `get_head` at every honest node selects (r, EMPTY) from slot N+2 onward.*
+
+The False-DA quorum overrides the honest proposer's discretion at construction time, via `should_build_on_full` (Algorithm 6b). Unlike Lemma 14, which describes a setting where `should_extend_payload`'s fallbacks save FULL, here `should_build_on_full` (which has no fallbacks) strips even an honest proposer's ability to declare FULL. No proposer collusion is required — the attack is purely PTC-driven.
+
+*Proof.* At slot N+1 start, the honest proposer runs `head = get_head(store)`. By Lemma 14 applied with hypothesis (3) of *this* lemma flipped — i.e., even though a False-DA quorum exists, the False-DA quorum does not affect `should_extend_payload`'s primary path on its own (the primary path requires both True-quorums to hold; False-DA breaks the True-DA conjunct, so the primary path fails) — but fallback (a) fires because `proposer_boost_root == Root()` at slot N+1 start (no slot-N+1 block has yet been broadcast — this is the honest proposer's *own* `get_head` call). Therefore `should_extend_payload` returns True and `get_head` returns `head = (r, FULL)`.
+
+Now the honest proposer evaluates `should_build_on_full(store, head=(r, FULL))` per Algorithm 6b. `head.payload_status = FULL`, so the EMPTY guard at line 3 does not fire. By hypothesis (2), `payload_data_availability(store, r, available=False)` returns True. By line 4 of Algorithm 6b, `should_build_on_full` returns `not True == False`. The honest proposer is therefore forced to declare `parentStatus = EMPTY` in its bid and to build its EL payload on the EMPTY parent state — its `propose` handler (Section 12.2) sets `body.parent_execution_requests = ExecutionRequests()` (the empty case of the conditional).
+
+After the slot-N+1 block lands, `proposer_boost_root` is set to the slot-N+1 block's root. Every other honest node now re-evaluates `should_extend_payload(store, r)` inside `get_head`:
+- Hard guard passes (`is_payload_verified` True).
+- PTC primary path fails (`payload_timeliness(..., timely=True) AND payload_data_availability(..., available=True)` — the True-DA conjunct fails because the True-quorum is unreachable when there is a False-quorum, by Helper 5).
+- Fallback (a) fails (`proposer_boost_root != Root()` now).
+- Fallback (b) fails (the slot-N+1 block extends B by construction).
+- Fallback (c) fails (the slot-N+1 block declared EMPTY).
+
+All branches of the disjunction are False, so `should_extend_payload` returns False. By Definition 13, the tiebreaker assigns FULL priority 0 (since `should_extend_payload` is False) and EMPTY priority 1, so `get_head` selects (r, EMPTY) at every honest node. ∎
+
+*Remark.* The False-DA-quorum attack is excluded under **S3** (honest PTC majority): an honest PTC member observing an honestly delivered blob set votes `blob_data_available = True`, so at most `512 - 257 = 255` False votes can be cast, which is below `DATA_AVAILABILITY_TIMELY_THRESHOLD = 256`. Outside S3, however, this attack succeeds with no proposer collusion. The honest builder, despite revealing timely with all blob columns broadcast, has no defense within the cautious-reveal strategy (Assumption H7): PTC votes are cast at `T_ptc`, after the builder's reveal window, so the builder cannot condition on PTC behaviour at reveal time. The economic outcome mirrors the colluding-proposer attack of Lemma 17: B is canonical at slot N as a beacon block, accumulates honest attestation weight, and Path B (Lemma 10) settles the builder payment at the epoch boundary — so the builder is charged AND the payload is not on the canonical chain at slot N+1.
 
 ---
 
@@ -1396,7 +1463,7 @@ This is the worst-case scenario for PTC failure combined with proposer collusion
 
 *Proof.*
 
-*Part (i):* The hard guard at Algorithm 6 line 2 passes because the builder revealed a valid execution payload (`is_payload_verified(store, r)` is True). By assumption (2), more than half of PTC members voted False, so `sum(store.payload_timeliness_vote[r]) ≤ PTC_SIZE / 2` and `is_payload_timely` returns False (Helper 4). The PTC primary path at line 6 fails. By assumption (3), a block exists in slot N+1 (`proposer_boost_root ≠ Root()`, so line 7 fails), it is a child of B (`boost_block.parent_root == r`, so line 8 fails), and it declares `parentStatus = EMPTY` (`is_parent_node_full` returns False, so line 9 fails). All conditions in the disjunction are False, and `should_extend_payload` returns False. By Definition 13, tiebreaker for FULL = 0, tiebreaker for EMPTY = 1. `get_head` selects (r, EMPTY).
+*Part (i):* The hard guard at Algorithm 6 line 2 passes because the builder revealed a valid execution payload (`is_payload_verified(store, r)` is True). By assumption (2), more than half of PTC members voted False, so `sum(store.payload_timeliness_vote[r]) ≤ PTC_SIZE / 2` and `payload_timeliness` returns False (Helper 4). The PTC primary path at line 6 fails. By assumption (3), a block exists in slot N+1 (`proposer_boost_root ≠ Root()`, so line 7 fails), it is a child of B (`boost_block.parent_root == r`, so line 8 fails), and it declares `parentStatus = EMPTY` (`is_parent_node_full` returns False, so line 9 fails). All conditions in the disjunction are False, and `should_extend_payload` returns False. By Definition 13, tiebreaker for FULL = 0, tiebreaker for EMPTY = 1. `get_head` selects (r, EMPTY).
 
 *Part (ii):* We characterise what the protocol guarantees once the colluders have succeeded at slot N+1. The honest framing is **damage bounded, not damage recovered**: the protocol does not enforce that the FULL branch will be re-selected by honest proposers, but it does guarantee that the FULL branch remains structurally available, that no honest validator is slashed, and that the slot-N proposer is still paid.
 
@@ -1435,13 +1502,13 @@ This ensures that honest builders' FULL/EMPTY declarations match reality: if the
 
 *Proof.* The honest builder constructs its bid by invoking the `submit_bid` handler (Section 12.2). Line 3 reads `parent_block_hash ← state.latest_block_hash`. The subtlety: at the time the slot-$N+1$ builder constructs its bid, no block has yet executed `apply_parent_execution_payload` for $B$'s execution payload — that helper runs *inside* `process_block` of the slot-$N+1$ block, which doesn't exist yet (the builder is constructing the bid for it). So `state.latest_block_hash` as held in `store.block_states[B.root]` has *not* been updated to `bid(B).block_hash` yet.
 
-This is resolved by the spec function `prepare_execution_payload` (`validator.md`), which the builder calls before constructing the bid. `prepare_execution_payload` operates on a *copy* of `store.block_states[B.root]`, and on that copy it locally simulates `apply_parent_execution_payload` whenever `should_extend_payload(store, B.root)` returns True (i.e., when the builder is building on the FULL branch). The simulation calls Helper 12b, which at line 29 sets `state.latest_block_hash = parent_bid.block_hash` where `parent_bid = state.latest_execution_payload_bid` (cached as `bid(B)` by Helper 8 line 27 during slot-$N$'s `process_block`).
+This is resolved by the spec function `prepare_execution_payload` (`validator.md`), which the builder calls before constructing the bid. `prepare_execution_payload` operates on a *copy* of `store.block_states[B.root]`, and on that copy it locally simulates `apply_parent_execution_payload` whenever `should_build_on_full(store, head)` returns True, where `head = get_head(store)` (i.e., when the builder is building on the FULL branch). The simulation calls Helper 12b, which at line 29 sets `state.latest_block_hash = parent_bid.block_hash` where `parent_bid = state.latest_execution_payload_bid` (cached as `bid(B)` by Helper 8 line 27 during slot-$N$'s `process_block`).
 
 We split into two cases on the builder's intent:
 
-**Case 1: The builder is building on $B$-FULL.** This is rational precisely when `B.root ∈ store.payloads` (otherwise the FULL node does not exist by Lemma 1, the resulting block would fail `on_block`'s assertion at Algorithm 7 line 5, and the builder gains nothing). The builder calls `prepare_execution_payload` with the FULL branch selected, the simulation runs Helper 12b on the state copy, and on the copy `state.latest_block_hash = bid(B).block_hash`. Line 3 of `submit_bid` reads this value, so `bid.parent_block_hash = bid(B).block_hash`. By Definition 4, `parentStatus(B') = FULL`.
+**Case 1: The builder is building on $B$-FULL.** This is rational precisely when `B.root ∈ store.payloads` (otherwise the FULL node does not exist by Lemma 1, the resulting block would fail `on_block`'s assertion at Algorithm 7 line 5, and the builder gains nothing). The builder calls `prepare_execution_payload` with `head = (B.root, FULL)`; Algorithm 6b's `should_build_on_full(store, head)` returns True (head is FULL and no False-DA quorum exists under the honest-PTC hypothesis), the simulation runs Helper 12b on the state copy, and on the copy `state.latest_block_hash = bid(B).block_hash`. Line 3 of `submit_bid` reads this value, so `bid.parent_block_hash = bid(B).block_hash`. By Definition 4, `parentStatus(B') = FULL`.
 
-**Case 2: The builder is building on $B$-EMPTY.** An honest builder runs `get_head` (via `prepare_execution_payload` in the `submit_bid` handler) immediately before constructing the bid, and extends whatever payload status `get_head` selects — the honest-behavior code does not branch on builder policy. So the honest builder reaches Case 2 if and only if `get_head` returned $(B.\mathit{root}, \mathrm{EMPTY})$ when run on the local store. By Lemma 1, $(B.\mathit{root}, \mathrm{FULL})$ exists as a child of $(B.\mathit{root}, \mathrm{PENDING})$ if and only if $B.\mathit{root} \in \mathit{store.payloads}$; by Lemma 13, `get_head` cannot return $(B.\mathit{root}, \mathrm{FULL})$ when $B.\mathit{root} \notin \mathit{store.payloads}$. Therefore Case 2 corresponds exactly to $B.\mathit{root} \notin \mathit{store.payloads}$. In that case, `should_extend_payload(store, B.root)` returns False (the hard guard at Algorithm 6 line 2 fails), the simulation skips the `apply_parent_execution_payload` call, and the state copy retains its pre-slot-$N$ value of `latest_block_hash`. Specifically, `latest_block_hash` was last updated by some earlier block's `apply_parent_execution_payload`, to that earlier block's `bid.block_hash` — call it `h_prev`, with `h_prev` ≠ `bid(B).block_hash` (different by the Definition 4 disjunction). Line 3 reads `h_prev`, so `bid.parent_block_hash` = `h_prev` ≠ `bid(B).block_hash`, and by Definition 4, `parentStatus(B') = EMPTY`.
+**Case 2: The builder is building on $B$-EMPTY.** An honest builder runs `get_head` (via `prepare_execution_payload` in the `submit_bid` handler) immediately before constructing the bid, and extends whatever payload status `get_head` selects — the honest-behavior code does not branch on builder policy. So the honest builder reaches Case 2 if and only if `get_head` returned $(B.\mathit{root}, \mathrm{EMPTY})$ when run on the local store (or if `get_head` returned FULL but `should_build_on_full` returned False due to a False-DA quorum on the head). By Lemma 1, $(B.\mathit{root}, \mathrm{FULL})$ exists as a child of $(B.\mathit{root}, \mathrm{PENDING})$ if and only if $B.\mathit{root} \in \mathit{store.payloads}$; by Lemma 13, `get_head` cannot return $(B.\mathit{root}, \mathrm{FULL})$ when $B.\mathit{root} \notin \mathit{store.payloads}$. Therefore the EMPTY-from-`get_head` subcase corresponds exactly to $B.\mathit{root} \notin \mathit{store.payloads}$. In that case, `should_build_on_full(store, head)` returns False (head is EMPTY, line 3 of Algorithm 6b fires), the simulation skips the `apply_parent_execution_payload` call, and the state copy retains its pre-slot-$N$ value of `latest_block_hash`. Specifically, `latest_block_hash` was last updated by some earlier block's `apply_parent_execution_payload`, to that earlier block's `bid.block_hash` — call it `h_prev`, with `h_prev` ≠ `bid(B).block_hash` (different by the Definition 4 disjunction). Line 3 reads `h_prev`, so `bid.parent_block_hash` = `h_prev` ≠ `bid(B).block_hash`, and by Definition 4, `parentStatus(B') = EMPTY`. The other subcase (`get_head` returned FULL but `should_build_on_full` returned False) requires a False-DA quorum on B; this is excluded under the honest-PTC hypothesis (S3 / Assumption H7's broader regime).
 
 Eventually, when slot-$N+1$'s block $B'$ is processed by all honest nodes, `process_parent_execution_payload` (Helper 12c) runs deterministically: it compares `bid(B').parent_block_hash` against the on-state `state.latest_execution_payload_bid.block_hash = bid(B).block_hash`, and either applies $B$'s execution effects (Case 1, FULL match) or asserts emptiness of `parent_execution_requests` and returns (Case 2, EMPTY match). The simulation result and the network's deterministic execution agree because both operate on the same state copy and bid data. ∎
 
@@ -1481,9 +1548,11 @@ The only path to populating $\mathit{store.payloads}[B.\mathit{root}]$ is Algori
 
 This ensures that `process_parent_execution_payload` (Helper 12c) will not reject an honest proposer's block at the `hash_tree_root` check.
 
-*Proof.* By the `propose` handler (Section 12.2, Proposer), lines 27–30: if `should_extend_payload(store, parent_root)` is true (the proposer is building on B-FULL), the proposer sets `body.parent_execution_requests = store.payloads[parent_root].execution_requests`. The payload in `store.payloads[parent_root]` was stored by `on_execution_payload_envelope` (Algorithm 8, line 7) only after `verify_execution_payload_envelope` (Helper 12) verified the payload. During that verification, Helper 12 line 17 asserted `hash_tree_root(envelope.execution_requests) == bid.execution_requests_root`. Therefore, the execution requests in the stored payload satisfy the root commitment. When `process_parent_execution_payload` (Helper 12c) runs for B', line 9 checks `hash_tree_root(requests) == parent_bid.execution_requests_root` — this holds because the requests are the same object whose root was verified at payload-verification time.
+*Proof.* By the `propose` handler (Section 12.2, Proposer), the proposer computes `head = get_head(store)` and then sets `body.parent_execution_requests` based on `should_build_on_full(store, head)` (Algorithm 6b): if True, the proposer sets `body.parent_execution_requests = store.payloads[head.root].execution_requests`; if False, the proposer sets it to `ExecutionRequests()`.
 
-If `should_extend_payload(store, parent_root)` is false (building on EMPTY), the proposer sets `body.parent_execution_requests = ExecutionRequests()`. When Helper 12c runs, it detects the empty-parent case at line 5 and asserts `requests == ExecutionRequests()` at line 6 — which holds. ∎
+**FULL case.** When `should_build_on_full(store, head)` returns True, `head.payload_status = FULL` (by Algorithm 6b line 3) and no False-DA quorum exists (by Algorithm 6b line 4). FULL existence in the tree requires `head.root ∈ store.payloads` by Lemma 1. The payload in `store.payloads[head.root]` was stored by `on_execution_payload_envelope` (Algorithm 8, line 7) only after `verify_execution_payload_envelope` (Helper 12) verified the payload. During that verification, Helper 12 line 17 asserted `hash_tree_root(envelope.execution_requests) == bid.execution_requests_root`. Therefore, the execution requests in the stored payload satisfy the root commitment. When `process_parent_execution_payload` (Helper 12c) runs for B', line 9 checks `hash_tree_root(requests) == parent_bid.execution_requests_root` — this holds because the requests are the same object whose root was verified at payload-verification time. The resulting block B' declares `parentStatus = FULL` (Definition 4) because the proposer's bid will commit `parent_block_hash = bid(B).block_hash` (Lemma 18 Case 1).
+
+**EMPTY case.** When `should_build_on_full(store, head)` returns False — either because `head.payload_status = EMPTY` (Algorithm 6b line 3) or because a False-DA quorum exists (Algorithm 6b line 4) — the proposer sets `body.parent_execution_requests = ExecutionRequests()`. When Helper 12c runs for B', it detects the empty-parent case at line 5 and asserts `requests == ExecutionRequests()` at line 6 — which holds. The resulting block B' declares `parentStatus = EMPTY` (Lemma 18 Case 2). ∎
 
 ---
 
@@ -1582,7 +1651,7 @@ No handler contains a `del store.payloads[r]`, `del store.blocks[r]`, or `del st
 
 By Lemma 1, the FULL node for root r exists if and only if `r ∈ store.payloads`. Since entries are never removed from `store.payloads`, if the FULL node exists at time t, it exists at all t' > t. The same monotonicity applies to `get_node_children` (Algorithm 2), `is_supporting_vote` (Algorithm 4), and `get_weight` (Algorithm 5), which read from but never delete store entries. ∎
 
-*Verification note.* The proof's claim that the four listed handlers exhaust all writers to `store.{blocks, block_states, payloads, payload_timeliness_vote, payload_data_availability_vote}` should be cross-checked against the upstream spec ([`fork-choice.md`](https://github.com/ethereum/consensus-specs/blob/master/specs/gloas/fork-choice.md)). A useful spot-check is `grep -nE "^\\s*store\\.(blocks|block_states|payloads|payload_timeliness_vote|payload_data_availability_vote)\\[" fork-choice.md` — every write site should land inside one of the four handlers above. If a future spec revision adds a new handler that mutates these fields (e.g., for fork transition, garbage collection, or finality-driven cleanup), Lemma 23 must be revisited. As of the spec version targeted by this document (`fa8bb08`), no such additional writer exists.
+*Verification note.* The proof's claim that the four listed handlers exhaust all writers to `store.{blocks, block_states, payloads, payload_timeliness_vote, payload_data_availability_vote}` should be cross-checked against the upstream spec ([`fork-choice.md`](https://github.com/ethereum/consensus-specs/blob/master/specs/gloas/fork-choice.md)). A useful spot-check is `grep -nE "^\\s*store\\.(blocks|block_states|payloads|payload_timeliness_vote|payload_data_availability_vote)\\[" fork-choice.md` — every write site should land inside one of the four handlers above. If a future spec revision adds a new handler that mutates these fields (e.g., for fork transition, garbage collection, or finality-driven cleanup), Lemma 23 must be revisited. As of the spec version targeted by this document (`4a4937b`), no such additional writer exists.
 
 *Remark.* This persistence property ensures that after PTC+proposer collusion forces EMPTY for one slot, `store.payloads[r]` still exists and the FULL node remains structurally available. Whether the FULL branch actually recovers depends on whether an honest proposer builds on it (Lemma 17, Part (ii)). Regardless, the proposer's payment is guaranteed via Path B if the quorum was met (Lemma 10).
 
@@ -1600,7 +1669,7 @@ By Lemma 1, the FULL node for root r exists if and only if `r ∈ store.payloads
 
 Under assumption (i) ($\beta < 0.2$): the honest fraction of committee weight is $1 - \beta > 0.8$. By Step 2, all honest slot-N validators vote for $B$ at $T_{\mathrm{att}} = 3\,\text{s}$. By assumption (iii), these attestations are received by $T_{\mathrm{att}} + \Delta < T_{\mathrm{ptc}} = 9\,\text{s}$. The accumulated honest attestation weight for $B$ thus crosses the 40% threshold strictly before $T_{\mathrm{ptc}}$ (in fact, well before, since $0.8 > 0.4$). The cautious-reveal preconditions are therefore satisfiable, and the honest builder broadcasts the payload at some time $t_{\mathrm{rev}} \in [T_{\mathrm{att}}, T_{\mathrm{ptc}})$.
 
-By assumption (iii) (synchrony), the payload reaches all honest nodes by $t_{\mathrm{rev}} + \Delta \leq T_{\mathrm{ptc}}$. Honest PTC members observe it and vote `payload_present = True` and `blob_data_available = True` (Lemma H4). The number of honest PTC members is at least $\lceil (1 - \beta) \cdot 512 \rceil > 0.8 \cdot 512 = 409.6$, i.e., at least $410$. Each casts a `True` vote on both arrays. Since $\texttt{PAYLOAD\_TIMELY\_THRESHOLD} = \lfloor 512 / 2 \rfloor = 256$ and $410 > 256$, both `is_payload_timely` (Helper 4) and `is_payload_data_available` (Helper 5) return True.
+By assumption (iii) (synchrony), the payload reaches all honest nodes by $t_{\mathrm{rev}} + \Delta \leq T_{\mathrm{ptc}}$. Honest PTC members observe it and vote `payload_present = True` and `blob_data_available = True` (Lemma H4). The number of honest PTC members is at least $\lceil (1 - \beta) \cdot 512 \rceil > 0.8 \cdot 512 = 409.6$, i.e., at least $410$. Each casts a `True` vote on both arrays. Since $\texttt{PAYLOAD\_TIMELY\_THRESHOLD} = \lfloor 512 / 2 \rfloor = 256$ and $410 > 256$, both `payload_timeliness` (Helper 4) and `payload_data_availability` (Helper 5) return True.
 
 At slot $N+1$, `should_extend_payload` (Algorithm 6) returns True via the PTC primary path (line 6). The tiebreaker (Definition 13) favors FULL: the priority key for $(B, \text{FULL})$ is 2, vs. 1 for $(B, \text{EMPTY})$. By Lemma 7 Part (b), no slot-$N+1$ proposer can reorg $B$ via boost alone, so $(B, \text{FULL})$ is canonical for every honest validator at slot $N+1$. The next honest proposer builds on $(B, \text{FULL})$. Inside `process_block` (Helper 11), `process_parent_execution_payload` (Helper 12c) detects FULL, verifies the execution requests root, and calls `apply_parent_execution_payload` (Helper 12b), which processes execution requests, settles the payment, and updates `state.latest_block_hash = bid(B).block_hash`. The execution chain advances.
 
@@ -1721,35 +1790,35 @@ This is the fork-choice store version of the same FULL/EMPTY determination. It c
 
 *Spec reference: `get_parent_payload_status` in `fork-choice.md`.*
 
-#### Helper 4: is_payload_timely
+#### Helper 4: payload_timeliness
 
 ```python
-def is_payload_timely(store, root):
+def payload_timeliness(store, root, timely):
     assert root in store.payload_timeliness_vote
     if not is_payload_verified(store, root):
-        return False                                               # Must have validated locally
+        return not timely                                          # Local-verification gate
     votes = store.payload_timeliness_vote[root]
-    return sum(vote is True for vote in votes) > PAYLOAD_TIMELY_THRESHOLD
+    return sum(vote is timely for vote in votes) > PAYLOAD_TIMELY_THRESHOLD
 ```
 
-This function checks whether the execution payload for a given block was delivered on time. It requires two independent conditions: (1) the node itself must have locally received and validated the payload (`is_payload_verified(store, root)` — this prevents a node from favoring FULL for a payload it cannot verify), and (2) a majority of PTC members must have voted `payload_present = True` (more than `PAYLOAD_TIMELY_THRESHOLD`). The PTC votes are read from the scorecard populated by `on_payload_attestation_message` (Algorithm 9). This function is called by `should_extend_payload` (Algorithm 6, line 6) and corresponds to the first condition in Definition 11.
+This function checks whether the PTC has reached a *quorum* on the timeliness signal `payload_present`. It is parameterized by a boolean `timely`: with `timely=True` it returns True iff a **True-timeliness quorum** exists (a majority of PTC members voted `payload_present = True`); with `timely=False` it returns True iff a **False-timeliness quorum** exists (a majority voted False). Two independent gates apply: (1) the node itself must have locally received and validated the payload (`is_payload_verified(store, root)` — this prevents a node from declaring a quorum about a payload it cannot verify; when the local view is missing, the function defaults to `not timely`, i.e. it reports "no True quorum / yes False quorum" symmetrically), and (2) the count of matching PTC votes must exceed `PAYLOAD_TIMELY_THRESHOLD`. The PTC votes are read from the scorecard populated by `on_payload_attestation_message` (Algorithm 9). This function is called by `should_extend_payload` (Algorithm 6, line 6) with `timely=True` — for the PTC primary path — and corresponds to the first condition in Definition 11.
 
-*Spec reference: `is_payload_timely` in `fork-choice.md`.*
+*Spec reference: `payload_timeliness` in `fork-choice.md`.*
 
-#### Helper 5: is_payload_data_available
+#### Helper 5: payload_data_availability
 
 ```python
-def is_payload_data_available(store, root):
+def payload_data_availability(store, root, available):
     assert root in store.payload_data_availability_vote
     if not is_payload_verified(store, root):
-        return False                                               # Must have validated locally
+        return not available                                       # Local-verification gate
     votes = store.payload_data_availability_vote[root]
-    return sum(vote is True for vote in votes) > DATA_AVAILABILITY_TIMELY_THRESHOLD
+    return sum(vote is available for vote in votes) > DATA_AVAILABILITY_TIMELY_THRESHOLD
 ```
 
-Identical structure to `is_payload_timely` (Helper 4), but checks blob data availability instead of payload presence. PTC members vote on both dimensions independently: `payload_present` (did the execution payload arrive?) and `blob_data_available` (is the blob data available?). Both must pass for `should_extend_payload` (Algorithm 6, line 6) to return True via the primary path. This corresponds to the second condition in Definition 11.
+Identical structure to `payload_timeliness` (Helper 4), but checks blob-data-availability quorums instead of timeliness quorums. PTC members vote on both dimensions independently: `payload_present` (did the execution payload arrive?) and `blob_data_available` (is the blob data available?). Called with `available=True` from `should_extend_payload` (Algorithm 6, line 6) — for the PTC primary path — and called with `available=False` from `should_build_on_full` (Algorithm 6b) — to detect a **False-DA quorum** that forces the slot-N+1 proposer to reorg an unavailable payload. This corresponds to the second condition in Definition 11.
 
-*Spec reference: `is_payload_data_available` in `fork-choice.md`.*
+*Spec reference: `payload_data_availability` in `fork-choice.md`.*
 
 #### Helper 6: can_builder_cover_bid
 
@@ -2522,7 +2591,7 @@ and symmetrically for the lower tail. $\blacksquare$
 
 ePBS uses Lemma 26 at two committee sizes, with two different operative thresholds. **Each threshold is determined by the mechanism it serves, not by Lemma 26 itself.**
 
-**Instantiation A: PTC (size $k = 512$, threshold $\beta_{\text{PTC}} < 0.5$).** The PTC needs honest majority on `is_payload_timely` (Helper 4): $\sum \text{True} > 256$. This holds whenever $\beta_{\text{PTC}} < 0.5$.
+**Instantiation A: PTC (size $k = 512$, threshold $\beta_{\text{PTC}} < 0.5$).** The PTC needs honest majority on `payload_timeliness` (Helper 4): $\sum \text{True} > 256$. This holds whenever $\beta_{\text{PTC}} < 0.5$.
 
 | $\beta'$ (global) | Required deviation$\epsilon = 0.5 - \beta'$ | $\Pr[\beta_{\text{PTC}} \geq 0.5]$                | Verdict                                                    |
 | ------------------- | --------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------- |
@@ -2665,7 +2734,7 @@ The slot timeline (Definition 1) places the bid commitment at the proposer's bea
 
 **Definition 15** (Reveal deadline). The *reveal deadline* for a slot N payload is `t_reveal = slot_start(N) + T_ptc` (with `T_ptc = 9s` under `PAYLOAD_ATTESTATION_DUE_BPS = 7500`). A reveal observed by an honest PTC member at or before `t_reveal` is voted as `payload_present = True`; a reveal observed strictly after `t_reveal` does not influence the same-slot PTC tally because PTC members have already broadcast. After `t_reveal`, even if `on_execution_payload_envelope` (Algorithm 8) succeeds and populates `store.payloads[r]`, the FULL/EMPTY tiebreaker for slot N (Definition 13) is decided based on the votes already cast.
 
-*Spec reference: `is_payload_timely` (Helper 4); PTC member broadcast time in `validator.md`.*
+*Spec reference: `payload_timeliness` (Helper 4); PTC member broadcast time in `validator.md`.*
 
 **Definition 16** (Option window). The *option window* for a slot N bid is the interval `[t_commit, t_reveal)` of length `T_ptc = 9s`. Within this window, the builder can decide to reveal (broadcasting a `SignedExecutionPayloadEnvelope`) or to withhold (broadcasting nothing). The decision is unilateral: no consensus message during the window can revoke the bid commitment recorded at `t_commit`.
 
@@ -2685,13 +2754,13 @@ The builder receives no on-chain payment in return: no payload was revealed, so 
 
 ---
 
-**Lemma 30** (Option window upper bound — PTC tally is frozen). *The option window has length `T_ptc` (= 9 seconds with current spec parameters). The same-slot PTC tally for B (i.e., the second conjunct of `is_payload_timely`, `sum(payload_timeliness_vote[B.root] is True) > PAYLOAD_TIMELY_THRESHOLD`) is determined entirely by votes broadcast at or before `slot_start(N) + T_ptc`. A late payload (arriving at `t > slot_start(N) + T_ptc`) does not modify the tally.*
+**Lemma 30** (Option window upper bound — PTC tally is frozen). *The option window has length `T_ptc` (= 9 seconds with current spec parameters). The same-slot PTC tally for B (i.e., the second conjunct of `payload_timeliness`, `sum(payload_timeliness_vote[B.root] is True) > PAYLOAD_TIMELY_THRESHOLD`) is determined entirely by votes broadcast at or before `slot_start(N) + T_ptc`. A late payload (arriving at `t > slot_start(N) + T_ptc`) does not modify the tally.*
 
-*Proof.* By the honest PTC member behavior (Section 12.2, PTC handler), at time `slot_start(N) + T_ptc` each honest PTC member assigned to slot N broadcasts a `PayloadAttestationMessage` with `payload_present = is_payload_verified(store, B.root)` evaluated at that time. By the standing network-model synchrony assumption (every honest node receives any honestly broadcast message within delay $\Delta < T_{\mathrm{att}}$), all honest PTC votes for slot N reach all honest nodes by `slot_start(N+1)`. The `payload_timeliness_vote[B.root]` array is written only by `on_payload_attestation_message` (Algorithm 9) applied to these votes. A late payload arriving at `t > slot_start(N) + T_ptc` is processed by `on_execution_payload_envelope` (Algorithm 8) and may populate `store.payloads[B.root]`, but it does **not** trigger any write to `payload_timeliness_vote[B.root]`. Therefore the second conjunct of `is_payload_timely` reads the same value regardless of when the payload arrives. ∎
+*Proof.* By the honest PTC member behavior (Section 12.2, PTC handler), at time `slot_start(N) + T_ptc` each honest PTC member assigned to slot N broadcasts a `PayloadAttestationMessage` with `payload_present = is_payload_verified(store, B.root)` evaluated at that time. By the standing network-model synchrony assumption (every honest node receives any honestly broadcast message within delay $\Delta < T_{\mathrm{att}}$), all honest PTC votes for slot N reach all honest nodes by `slot_start(N+1)`. The `payload_timeliness_vote[B.root]` array is written only by `on_payload_attestation_message` (Algorithm 9) applied to these votes. A late payload arriving at `t > slot_start(N) + T_ptc` is processed by `on_execution_payload_envelope` (Algorithm 8) and may populate `store.payloads[B.root]`, but it does **not** trigger any write to `payload_timeliness_vote[B.root]`. Therefore the second conjunct of `payload_timeliness` reads the same value regardless of when the payload arrives. ∎
 
-*Remark on `is_payload_timely` flipping.* `is_payload_timely` (Helper 4) is the conjunction of two conjuncts: (a) `is_payload_verified(store, B.root)`, and (b) the PTC tally above threshold. Lemma 30 establishes that the tally (b) is frozen at $T_{\mathrm{ptc}}$. The verification gate (a), however, CAN flip from `False` to `True` when a late payload arrives. So `is_payload_timely` can flip from `False` to `True` precisely in the case where the tally was already $>$ threshold at $T_{\mathrm{ptc}}$ but a local observer hadn't yet validated the payload. In the typical "builder withholds, PTC votes False" scenario this case does not arise (the tally is False), and `is_payload_timely` stays False even after a late payload.
+*Remark on `payload_timeliness` flipping.* `payload_timeliness` (Helper 4) is the conjunction of two conjuncts: (a) `is_payload_verified(store, B.root)`, and (b) the PTC tally above threshold. Lemma 30 establishes that the tally (b) is frozen at $T_{\mathrm{ptc}}$. The verification gate (a), however, CAN flip from `False` to `True` when a late payload arrives. So `payload_timeliness` can flip from `False` to `True` precisely in the case where the tally was already $>$ threshold at $T_{\mathrm{ptc}}$ but a local observer hadn't yet validated the payload. In the typical "builder withholds, PTC votes False" scenario this case does not arise (the tally is False), and `payload_timeliness` stays False even after a late payload.
 
-*Remark on the fork-choice outcome.* `should_extend_payload` (Algorithm 6) has two inputs a late payload can affect: the hard guard `is_payload_verified(store, B.root)` (line 2, can flip True via late payload) and `is_payload_timely` (just analysed). Even when the PTC tally was False at $T_{\mathrm{ptc}}$, a flipped hard guard can enable the proposer-based fallbacks (lines 7–9): if no slot-N+1 block has been proposed yet (fallback (a)) or if the slot-N+1 block declares FULL for B (fallback (c)), the tiebreaker can flip in B's favour. The PTC-primary-path option window therefore closes strictly at `T_ptc`, but the broader proposer-based recovery window remains open until the slot-N+1 proposer commits. Both are subject to the builder's strategic withholding decision — the formal "free option" exercise cost (Lemma 29) applies regardless.
+*Remark on the fork-choice outcome.* `should_extend_payload` (Algorithm 6) has two inputs a late payload can affect: the hard guard `is_payload_verified(store, B.root)` (line 2, can flip True via late payload) and `payload_timeliness` (just analysed). Even when the PTC tally was False at $T_{\mathrm{ptc}}$, a flipped hard guard can enable the proposer-based fallbacks (lines 7–9): if no slot-N+1 block has been proposed yet (fallback (a)) or if the slot-N+1 block declares FULL for B (fallback (c)), the tiebreaker can flip in B's favour. The PTC-primary-path option window therefore closes strictly at `T_ptc`, but the broader proposer-based recovery window remains open until the slot-N+1 proposer commits. Both are subject to the builder's strategic withholding decision — the formal "free option" exercise cost (Lemma 29) applies regardless.
 
 ---
 
