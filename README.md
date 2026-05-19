@@ -45,7 +45,7 @@ Every name below is a pedagogical helper, not a spec function. Each one abstract
 | `bid(B)`, `head(chain)`, `child(chain, B)`                                                      | "the bid carried by block B" —`B.body.signed_execution_payload_bid.message` (so `bid(B).block_hash`, `bid(B).parent_block_hash`, etc. are the corresponding fields of the `ExecutionPayloadBid` SSZ container). `head(chain)` is the head block of a canonical chain — the latest block in the sequence. `child(chain, B)` is B's unique canonical child on `chain` (the block whose `parent_root` equals B's hash-tree root); defined formally in §3.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `block_status(chain, B)`, `parentStatus(B)`                                                       | `block_status(chain, B)` is the FULL / EMPTY / undefined classifier defined in §3. `parentStatus(B)` is shorthand for "B's bid declares its parent as FULL or EMPTY" — i.e., FULL if `bid(B).parent_block_hash == state.latest_execution_payload_bid.block_hash` at B's processing time, EMPTY otherwise. Used in §7 / §8 to refer to a block's *declared* view of its parent.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `active_validators(store)`, `latest_message(v)`, `effective_balance(v)`, `child_blocks_of(r)` | Pedagogical helpers in the §8 G-assumption sketches; abbreviate `get_active_validator_indices(state, get_current_epoch(state))`, `store.latest_messages[v]`, `state.validators[v].effective_balance`, and the children-of-`r` filter that `get_node_children` (`fork-choice.md` line 534) applies, respectively.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `parent_remains_canonical(trace, B)`, `parent_in_previous_slot(B)`                                | Strengthening hypotheses introduced in §4.`parent_remains_canonical(trace, B)` ("parent(B) remains in the canonical chain of every honest validator at every step of the trace") is used by the §8.5 **P1 and P2** proof sketches and by the §8.4 `P1_hypothesis` / `P2_hypothesis` predicates — it closes the split-vote-at-slot-$N$ reorg gap left by the cautious-reveal threshold in **A6**. `parent_in_previous_slot(B)` ("$B$'s parent is at slot $B.\mathrm{slot} - 1$") is used by the §8.5 **P2** proof sketch and `P2_hypothesis` only — it closes the late-prior-slot gap exploitable by a colluding slot-$N{-}1$ / slot-$N$ Byzantine pair, and covers all multi-missing-slot configurations uniformly (the assumption fails whenever any slot between parent($B$) and $B$ is missing). P1 does not need this strengthening because its own 60%-honest-quorum hypothesis on $B$ already excludes the late-prior-slot competitor. Neither is a spec function; see §4 for full motivation and open work to weaken them. |
+| `parent_remains_canonical(trace, B)`, `parent_in_previous_slot(B)`                                | Names for the two strengthening clauses embedded in P1 and P2's statements (§4). `parent_remains_canonical(trace, B)` ("parent(B) remains in the canonical chain of every honest validator at every step of the trace") closes the split-vote-at-slot-$N$ reorg gap left by the cautious-reveal threshold in **A6**. `parent_in_previous_slot(B)` ("$B$'s parent is at slot $B.\mathrm{slot} - 1$") closes the late-prior-slot gap exploitable by a colluding slot-$N{-}1$ / slot-$N$ Byzantine pair, and covers all multi-missing-slot configurations uniformly (the assumption fails whenever any slot between parent($B$) and $B$ is missing). Both are used by the §8.5 P1 and P2 proof sketches and by the §8.4 `P1_hypothesis` / `P2_hypothesis` predicates. Neither is a spec function; see §4 for full motivation and open work to weaken them. |
 
 </details>
 
@@ -194,11 +194,9 @@ This is the foundation of Property P4 (Data availability for chain inclusion) be
 
 Each property is stated here informally and revisited precisely as we walk through the lifecycle. Each is backed by lemmas in the companion formal treatment.
 
-> ⚠️ **Required hypotheses for P1 and P2.** Throughout this section, **$B$ denotes the beacon block at slot $N$ carrying the bid under analysis** — i.e., the block whose proposer is paid by P1 and whose builder is protected by P2. P1 and P2 below additionally rely on strengthening hypotheses on $B$. **P1** relies on **`parent_remains_canonical(trace, B)`** — parent($B$) remains in the canonical chain of every honest validator at every step of the trace. **P2** relies on both `parent_remains_canonical(trace, B)` and **`parent_in_previous_slot(B)`** — $B$'s parent is at slot $N - 1$ (no slot is missing immediately before $B$ on $B$'s chain; equivalently, $B$'s chain has no gap at slot $N - 1$, and by extension at any slot between $B$'s parent and $B$). Without these, P1 / P2 can fail even for an honest builder. Motivations are detailed in the **Strengthening assumptions** paragraph at the end of this section.
+**P1: Unconditional payment to the proposer.** *Let $N$ be a slot whose parent is a block from slot $N{-}1$ that remains in the canonical chain at every later time.* If a beacon block at slot $N$ including a valid bid is proposed in a timely fashion extending that parent, the bid amount is paid to the proposer's fee recipient, with the on-chain payment commitment recorded within at most two epochs after $N$. The builder cannot commit to a bid and then avoid paying.
 
-**P1: Unconditional payment to the proposer.** If a beacon block including a valid bid is proposed in a timely fashion, the bid amount is paid to the proposer's fee recipient, with the on-chain payment commitment recorded within at most two epochs after the bid's slot. The builder cannot commit to a bid and then avoid paying.
-
-**P2: Builder revealing protection.** If an honest builder reveals, then its `bid.block_hash` is in the payload hash chain of the canonical beacon chain — equivalently, the block carrying its bid is FULL on chain (and by P4 below, the corresponding payload and blob data are available + valid).
+**P2: Builder revealing protection.** *Let $N$ be a slot whose parent is a block from slot $N{-}1$ that remains in the canonical chain at every later time.* If an honest builder for slot $N$ reveals, then its `bid.block_hash` is in the payload hash chain of the canonical beacon chain — equivalently, the block carrying its bid is FULL on chain (and by P4 below, the corresponding payload and blob data are available + valid).
 
 **P3: Builder withholding protection.** An honest builder that withholds its execution payload is not charged, and the proposer is not paid.
 
@@ -210,19 +208,19 @@ These four are the **externally checkable** guarantees: each can in principle be
 
 **Adversarial model.** Properties P1–P4 hold under the structural assumptions catalogued in §8.1: network synchrony (S1, Δ < T_att), a per-committee Byzantine bound of β < 20% (S2), and a PTC Byzantine bound < 50% (S3). Some properties additionally rely on per-instance honesty hypotheses (e.g., "honest slot-N+1 proposer") stated in the claim itself; these are formalised as S4 in §8.
 
-**Strengthening assumptions for P1 and P2.** P1 and P2 rely on strengthening hypotheses closing residual reorg gaps. P1 relies on one; P2 relies on both.
+**Why these preconditions.** The two clauses embedded in P1 and P2 — *parent at slot $N{-}1$* and *parent remains canonical forever* — close two residual reorg gaps where the property would otherwise fail even under honest behaviour.
 
-*(1) `parent_remains_canonical(trace, B)`* — parent(B) remains in the canonical chain of every honest validator at every step of the trace. **Used by P1 and P2.** Closes a **split-vote-at-slot-N** gap: a Byzantine slot-N proposer publishing $B$ late enough to fragment honest attestations, so that some honest validators vote on a sibling branch of parent($B$) instead of on $B$.
+*(1) Parent remains in the canonical chain forever.* Closes a **split-vote-at-slot-N** gap: a Byzantine slot-N proposer publishing $B$ late enough to fragment honest attestations, so that some honest validators vote on a sibling branch of parent($B$) instead of on $B$.
 
-*(2) `parent_in_previous_slot(B)`* — B's parent is at slot $B.\mathrm{slot} - 1$. **Used by P2 only.** Closes a **late-prior-slot** gap exploitable by a colluding Byzantine pair at slots $N{-}1$ and $N$:
+*(2) Parent is at slot $N{-}1$.* Closes a **late-prior-slot** gap exploitable by a colluding Byzantine pair at slots $N{-}1$ and $N$:
 
 - The slot-$N{-}1$ proposer withholds; slot-$N{-}1$ attesters see no slot-$N{-}1$ block and vote for the slot-$N{-}2$ head $H$.
 - The slot-$N$ proposer publishes $B$ (parent $= H$, skipping the empty slot) near $T_{\mathrm{att}}$, reaching one subset of slot-$N$ attesters. The slot-$N{-}1$ proposer simultaneously releases its withheld $B'$ (also parented at $H$, claiming slot $N{-}1$) to a different subset.
 - The adversary tunes delivery so that slot-$N$ attestation weight splits: $B$ collects $\sim 40\%$ (about 20% Byzantine on $B$ plus about 20% honest), while $B'$ collects $\sim 60\%$ honest.
 - $B$'s share clears **A6** (ii)'s $\geq 40\%$ real-attestation-weight threshold, and **A6** (iii) (no proposer equivocation against $B$'s proposer) is also satisfied because $B$ and $B'$ are signed by *different* proposers (the slot-$N$ and slot-$N{-}1$ proposers respectively). The honest builder therefore reveals per **A6**.
-- At slot $N{+}1$, fork-choice's `on_tick_per_slot` resets `proposer_boost_root`, so the boost that protected $B$ at slot $N$ is gone. Fork-choice now compares the siblings $B$ ($\sim 40\%$) and $B'$ ($\sim 60\%$) below their common parent $H$. $B'$ wins, the slot-$N{+}1$ proposer extends $B'$, and $B$ is reorged — breaking **P2** (the honest builder's revealed payload is not on the canonical chain).
+- At slot $N{+}1$, fork-choice's `on_tick_per_slot` resets `proposer_boost_root`, so the boost that protected $B$ at slot $N$ is gone. Fork-choice now compares the siblings $B$ ($\sim 40\%$) and $B'$ ($\sim 60\%$) below their common parent $H$. $B'$ wins, the slot-$N{+}1$ proposer extends $B'$, and $B$ is reorged — even though $B$ was published in a nominally timely fashion. Once $B$ is off the canonical chain, both **P1** (the proposer's payment commitment is lost with $B$) and **P2** (the honest builder's revealed payload is not on the canonical chain) fail.
 
-The §8.5 proof sketches and the §8.4 predicates rely on these hypotheses explicitly: P1 relies on (1) only; P2 relies on both. The Note at the end of §8.4 documents the open work to weaken them (likely by tightening A6's reveal threshold or adding a "no competing block of greater real weight at $t_{\mathrm{rev}}$" check).
+**An honest builder can self-enforce the parent-at-slot-$N{-}1$ precondition.** Under **S1** ($\Delta < T_{\mathrm{att}}$), an honest builder observes the gossip layer by bid-construction time and knows whether slot $N{-}1$ produced a block. If slot $N{-}1$ — or any slot between the canonical head and $N$ — is observably empty, the builder refuses to bid: forgoing one slot's MEV is strictly safer than bidding into a configuration where P1 and P2 have a known attack vector.
 
 The remainder of this document shows how the protocol's algorithms enforce each of P1–P4. §7 walks through the adversarial scenarios; §8 provides the formal-verification contract — a self-contained set of assumptions that, combined with the code in §5–§6, suffices to prove all four properties. The companion [formal treatment](https://github.com/ethereum/epbs-security-analysis/blob/formal-treatment/ePBS-pseudocode.md) discharges every §8 assumption as a lemma.
 
@@ -784,7 +782,7 @@ def process_builder_pending_payments(state):
 
 **The 60% threshold is what makes P3 work.** Under β < 20% per committee, Byzantine validators alone can contribute at most 20% to `payment.weight`. The quorum is set so that 60% = 40% (real honest support threshold) + 20% (Byzantine budget): if the beacon block has < 40% honest attestation weight, no combination of Byzantine voters can push the quorum over 60%, so a withholding builder is not charged. The threshold lives in this section because it is an implementation parameter; the property it underwrites (P3) is stated in §4 without referring to the specific 60%/40%/20% calibration.
 
-> **Property P1 — Unconditional payment.** For a block at slot N with `bid.value > 0` proposed in a timely fashion, the proposer's payment is queued within at most two epochs of slot N: at slot N+1 via Path A when the builder reveals and a subsequent block declares the slot FULL on chain, or at the end of epoch *e+1* via Path B when the builder withholds and the beacon block reaches the 60% quorum. After the IOU is cleared by either path, no second payment is ever produced: `process_attestation` skips zero-`amount` entries and `process_builder_pending_payments` checks `weight ≥ quorum` on a zeroed entry, which fails. The payment is therefore single and bounded in time.
+> **Property P1 — Unconditional payment.** For a block at slot N with `bid.value > 0` proposed in a timely fashion (under the §4 strengthening hypotheses `parent_remains_canonical(trace, B)` and `parent_in_previous_slot(B)`), the proposer's payment is queued within at most two epochs of slot N: at slot N+1 via Path A when the builder reveals and a subsequent block declares the slot FULL on chain, or at the end of epoch *e+1* via Path B when the builder withholds and the beacon block reaches the 60% quorum (the 60% follows from "timely" + the strengthenings + S1 + S2; see §8.5 P1 proof Case 1b). After the IOU is cleared by either path, no second payment is ever produced: `process_attestation` skips zero-`amount` entries and `process_builder_pending_payments` checks `weight ≥ quorum` on a zeroed entry, which fails. The payment is therefore single and bounded in time.
 
 > **Property P3 — Builder withholding protection.** If the builder withholds and the beacon block does not reach the quorum, the builder is not charged. The 60% threshold + β < 20% calibration ensures Byzantine voters alone cannot drive the quorum over the threshold without honest participation.
 
@@ -1404,19 +1402,23 @@ def honest_canonical(store: Store) -> Sequence[BeaconBlock]: ...
 def parent_remains_canonical(trace: Trace, B: BeaconBlock) -> bool: ...
 
 # B's parent block is at slot B.slot - 1: no slot between parent(B) and B
-# is missing on B's chain. A strengthening assumption used by P2 ONLY to
-# close the late-prior-slot gap exploitable by a colluding Byzantine pair
-# at slots N-1 and N. Without it, a withheld slot-N-1 block B' (parented at
-# an ancestor shared with B) can be released after slot N attesters cast
-# their votes for B; once proposer boost resets at slot N+1, fork-choice
-# compares B (~40%) and B' (~60% honest) below their common ancestor and
-# picks B', reorging B even though the honest builder for B followed the
-# cautious-reveal threshold (>=40% real weight + no equivocation against
-# B's own proposer). The assumption fails whenever ANY slot between
-# parent(B) and B is missing, so this single conjunct covers every multi-
-# missing-slot variant. P1 does not need this hypothesis because its
-# 60%-honest-quorum hypothesis on B already excludes the late-prior-slot
-# competitor. See the note below P4 for the open work to weaken this.
+# is missing on B's chain. A strengthening assumption used by BOTH P1 and
+# P2 to close the late-prior-slot gap exploitable by a colluding Byzantine
+# pair at slots N-1 and N. Without it, a withheld slot-N-1 block B'
+# (parented at an ancestor shared with B) can be released after slot N
+# attesters cast their votes for B; once proposer boost resets at slot
+# N+1, fork-choice compares B (~40%) and B' (~60% honest) below their
+# common ancestor and picks B', reorging B even though the honest builder
+# for B followed the cautious-reveal threshold (>=40% real weight + no
+# equivocation against B's own proposer). The assumption fails whenever
+# ANY slot between parent(B) and B is missing, so this single conjunct
+# covers every multi-missing-slot variant. P1 also needs this hypothesis:
+# the 60% Path B quorum on B is DERIVED in the P1 proof from "timely
+# publication" + S1 + S2 + parent_remains_canonical + parent_in_previous_slot
+# (not assumed); without parent_in_previous_slot, the late-prior-slot
+# attack caps B's payment.weight at ~40%, below the 60% threshold AND
+# reorgs B at slot N+1. See the note below P4 for the open work to weaken
+# this.
 def parent_in_previous_slot(B: BeaconBlock) -> bool: ...
 
 # The actor scheduled to propose at the given slot. Resolved from the
@@ -1455,11 +1457,12 @@ def implies(p: bool, q: bool) -> bool:
 #
 # Hypothesis: B at slot N carries an admissible value-bearing bid AND B is
 #   on the canonical chain of every honest validator from slot N+2 onward
-#   AND parent(B) remains canonical at every honest validator forever (a
-#   strengthening that closes the split-vote-at-slot-N reorg gap - see
-#   note below). The orthogonal late-prior-slot gap that P2 has to close
-#   is already excluded for P1 by the 60%-honest-quorum hypothesis on B
-#   itself, so parent_in_previous_slot is NOT required here.
+#   AND BOTH strengthening hypotheses hold: parent(B) remains canonical at
+#   every honest validator forever (closes the split-vote-at-slot-N reorg
+#   gap) AND parent(B) is at slot N-1 (closes the late-prior-slot gap from
+#   a colluding slot-N-1 / slot-N Byzantine pair). The 60% Path B quorum
+#   on B is DERIVED in the P1 proof (§8.5) from these hypotheses + S1 + S2
+#   + "timely publication", not assumed.
 # Conclusion: by the end of epoch e+1 (+ Delta), every honest validator's
 #   state for its head block records a BuilderPendingWithdrawal carrying
 #   (bid.value, proposer's fee_recipient, bid.builder_index) - appended by
@@ -1476,7 +1479,9 @@ def P1_hypothesis(trace: Trace, B: BeaconBlock) -> bool:
     if not (bid.value > 0):
         return False                          # P1 covers value-bearing bids; self-build is vacuous
     if not parent_remains_canonical(trace, B):
-        return False                          # strengthening - see note below
+        return False                          # strengthening (1) - see note below
+    if not parent_in_previous_slot(B):
+        return False                          # strengthening (2) - see note below
     t_settled = (N + 2) * SECONDS_PER_SLOT
     for s in trace:
         if s.event.time < t_settled:
@@ -1717,11 +1722,11 @@ def P4_conclusion(trace: Trace, h: Hash32) -> bool:
 
 </details>
 
-> **Note — strengthening assumptions in P1 and P2.** Two strengthening hypotheses on $B$ appear in the predicates above. **P1 relies on one; P2 relies on both.** Both are introduced in §4 ("Strengthening assumptions for P1 and P2"); the predicates above are the formal restatement.
+> **Note — strengthening assumptions in P1 and P2.** Two strengthening hypotheses on $B$ appear in the predicates above. **Both are load-bearing for both P1 and P2.** They are introduced in §4 ("Why these preconditions"); the predicates above are the formal restatement.
 >
-> *(1) `parent_remains_canonical(trace, B)` — parent(B) stays canonical at every honest validator throughout the trace. Used by both `P1_hypothesis` and `P2_hypothesis`.* This closes the **split-vote-at-slot-N** gap: a Byzantine slot-N proposer publishes B late enough to fragment honest attestations so that 40% see B in time and vote for B, while 60% don't see B and vote for an earlier head on a competing branch. Without the strengthening, a slot-N+1 honest proposer's `get_head` would walk to the heavier (alternative) branch and reorg B — even though the builder followed the cautious-reveal threshold (≥ 40% real weight on B). Forcing parent(B) to remain canonical excludes the alternative branch from honest fork-choice consideration, so the slot-N+1 proposer can only extend parent(B) — and B is the unique descendant of parent(B) at slot N under no equivocation visible to the builder (Assumption A6 check (c)).
+> *(1) `parent_remains_canonical(trace, B)` — parent(B) stays canonical at every honest validator throughout the trace.* This closes the **split-vote-at-slot-N** gap: a Byzantine slot-N proposer publishes B late enough to fragment honest attestations so that 40% see B in time and vote for B, while 60% don't see B and vote for an earlier head on a competing branch. Without the strengthening, a slot-N+1 honest proposer's `get_head` would walk to the heavier (alternative) branch and reorg B — even though the builder followed the cautious-reveal threshold (≥ 40% real weight on B). Forcing parent(B) to remain canonical excludes the alternative branch from honest fork-choice consideration, so the slot-N+1 proposer can only extend parent(B) — and B is the unique descendant of parent(B) at slot N under no equivocation visible to the builder (Assumption A6 check (c)).
 >
-> *(2) `parent_in_previous_slot(B)` — B's parent is at slot N − 1. Used by `P2_hypothesis` only.* This closes the **late-prior-slot** gap exploitable by a colluding slot-(N−1) / slot-N Byzantine pair: the slot-(N−1) proposer withholds, slot-(N−1) attesters fall back to the slot-(N−2) head $H$, the slot-N proposer publishes $B$ parented at $H$, and the slot-(N−1) proposer then releases its withheld $B'$ (also parented at $H$) so that slot-N attestation weight splits ≈40% on $B$ versus ≈60% honest on $B'$. The honest builder for $B$ has its A6 (ii) (≥40% real weight) AND A6 (iii) (no proposer equivocation against $B$'s proposer — the equivocation is by the slot-(N−1) proposer, not $B$'s) both satisfied, so it reveals. At slot N+1 `on_tick_per_slot` resets `proposer_boost_root`; fork-choice then compares siblings $B$ (≈40%) and $B'$ (≈60%) below their common parent $H$, picks $B'$, and reorgs $B$. The assumption `parent_in_previous_slot(B)` fails whenever ANY slot between parent(B) and B is missing, so this single conjunct covers all multi-missing-slot variants of the same attack. P1 does NOT need this hypothesis because its own 60%-honest-quorum hypothesis on B already rules out the competing sibling scenario at slot N.
+> *(2) `parent_in_previous_slot(B)` — B's parent is at slot N − 1.* This closes the **late-prior-slot** gap exploitable by a colluding slot-(N−1) / slot-N Byzantine pair: the slot-(N−1) proposer withholds, slot-(N−1) attesters fall back to the slot-(N−2) head $H$, the slot-N proposer publishes $B$ parented at $H$, and the slot-(N−1) proposer then releases its withheld $B'$ (also parented at $H$) so that slot-N attestation weight splits ≈40% on $B$ versus ≈60% honest on $B'$. The honest builder for $B$ has its A6 (ii) (≥40% real weight) AND A6 (iii) (no proposer equivocation against $B$'s proposer — the equivocation is by the slot-(N−1) proposer, not $B$'s) both satisfied, so it reveals. At slot N+1 `on_tick_per_slot` resets `proposer_boost_root`; fork-choice then compares siblings $B$ (≈40%) and $B'$ (≈60%) below their common parent $H$, picks $B'$, and reorgs $B$. The assumption `parent_in_previous_slot(B)` fails whenever ANY slot between parent(B) and B is missing, so this single conjunct covers all multi-missing-slot variants of the same attack. **P1 also needs this hypothesis:** the 60% Path B quorum on $B$ is derived in §8.5's P1 proof from "timely publication" + S1 + S2 + (1) + (2); without (2), the late-prior-slot attack caps $B$'s slot-N attestation weight at ~40% (below the 60% threshold) AND reorgs $B$ at slot N+1, so neither settlement path can fire.
 >
 > *Open work.* Both assumptions are stronger than the rest of the S/A/G framework. We are working on weaker formulations of P1 and P2 — likely by tightening the cautious-reveal threshold in A6 (currently 40%, matching `PROPOSER_SCORE_BOOST`) to a value that absorbs both the worst-case slot-N split-vote attack and the late-prior-slot attack, or by adding an explicit "no competing block of greater real weight at $t_{\mathrm{rev}}$" precondition to the builder's reveal decision. Until that work lands, the predicates above carry these strengthenings as explicit hypotheses.
 
@@ -1735,7 +1740,7 @@ The argument is valid **given** the stated assumptions; the follow-up formal tre
 
 **P1 (Unconditional payment to the proposer).**
 
-*Claim:* For a block at slot N with `bid.value > 0` proposed in a timely fashion (i.e., reaching the 60% same-slot attestation quorum among honest attesters), within at most two epochs of slot N the bid amount is **queued for transfer** to the proposer's `fee_recipient` as a `BuilderPendingWithdrawal` entry in `state.builder_pending_withdrawals`, and the payment is single (no double-charge). The execution-layer credit is then performed by `process_withdrawals` in a subsequent block. The case `bid.value = 0` (self-build) is vacuously covered: by **G-BidAdmit**, no IOU is created, and no payment is owed.
+*Claim:* Let $B$ be a block at slot $N$ with `bid.value > 0`, proposed in a timely fashion (i.e., the slot-$N$ proposer publishes $B$ early in slot $N$, without intentional delay) and satisfying the §4 strengthening hypotheses `parent_remains_canonical(trace, B)` and `parent_in_previous_slot(B)`. Within at most two epochs of slot $N$ the bid amount is **queued for transfer** to the proposer's `fee_recipient` as a `BuilderPendingWithdrawal` entry in `state.builder_pending_withdrawals`, and the payment is single (no double-charge). The execution-layer credit is then performed by `process_withdrawals` in a subsequent block. The case `bid.value = 0` (self-build) is vacuously covered: by **G-BidAdmit**, no IOU is created, and no payment is owed.
 
 <details>
 <summary><b>Proof sketch</b> (click to expand)</summary>
@@ -1745,7 +1750,7 @@ The argument is valid **given** the stated assumptions; the follow-up formal tre
 *Part 1 (settlement).* Two cases.
 
 - *Case 1a (Path A — FULL declared next slot).* A subsequent canonical block declares the slot FULL on chain (in the §3 sense — its `bid.parent_block_hash` equals this slot's `bid.block_hash`). By **G-Settle**, `process_parent_execution_payload → apply_parent_execution_payload` runs and calls `settle_builder_payment` with the `payment_index` for slot N. The code of `settle_builder_payment` shown in §6 then appends a `BuilderPendingWithdrawal` (unconditional under `withdrawal.amount > 0`) and zeroes the IOU.
-- *Case 1b (Path B — quorum gate at epoch boundary).* No subsequent canonical block declares the slot FULL. The IOU persists. By **G-PayAttest**, same-slot attesters accumulate `payment.weight`. By the 60%-quorum hypothesis of the claim, `payment.weight ≥ get_builder_payment_quorum_threshold(state)` at the end of epoch *e+1*. By **G-PayEpoch**, `process_builder_pending_payments` appends a `BuilderPendingWithdrawal` at that epoch boundary.
+- *Case 1b (Path B — quorum gate at epoch boundary).* No subsequent canonical block declares the slot FULL. The IOU persists. By **G-PayAttest**, same-slot attesters accumulate `payment.weight`. Under **S1**, **S2**, and the §4 strengthenings (`parent_remains_canonical(trace, B)` rules out a sibling of parent($B$) outweighing parent($B$); `parent_in_previous_slot(B)` rules out a late-released sibling at the missing slot fragmenting honest slot-$N$ attestation weight), the honest slot-$N$ committee votes near-unanimously for $B$ — at least $(1-\beta) W > 0.8 W$ — so `payment.weight ≥ get_builder_payment_quorum_threshold(state)` at the end of epoch *e+1*. By **G-PayEpoch**, `process_builder_pending_payments` appends a `BuilderPendingWithdrawal` at that epoch boundary.
 
 In both cases the proposer receives a `BuilderPendingWithdrawal`.
 
@@ -1755,7 +1760,7 @@ In both cases the proposer receives a `BuilderPendingWithdrawal`.
 
 *Solvency precondition.* By **G-BidAdmit** condition (c) plus **G-Solvency**, the bid was admitted at slot N only after `can_builder_cover_bid` verified the builder's balance covers all outstanding obligations. Otherwise the admission assertion fails and no IOU exists.
 
-*Assumptions used:* **G-BidAdmit**, **G-Settle**, **G-PayAttest**, **G-PayEpoch**, **G-Solvency**, **`parent_remains_canonical`** (strengthening, §4 — closes the split-vote-at-slot-$N$ reorg gap that would otherwise let parent($B$) lose canonicity and take $B$'s IOU off-chain with it; the orthogonal late-prior-slot gap is excluded by P1's own 60%-honest-quorum hypothesis on $B$, so `parent_in_previous_slot` is not needed here).
+*Assumptions used:* **S1**, **S2**, **G-BidAdmit**, **G-Settle**, **G-PayAttest**, **G-PayEpoch**, **G-Solvency**, **`parent_remains_canonical`** and **`parent_in_previous_slot`** (the two strengthening clauses embedded in P1's statement, §4 — both load-bearing). Together with **S1** and **S2**, the two strengthenings bridge "timely publication" to the 60% same-slot quorum on $B$ that Path B requires: `parent_remains_canonical` closes the split-vote-at-slot-$N$ reorg gap that would let parent($B$) lose canonicity and take $B$'s IOU off-chain; `parent_in_previous_slot` closes the late-prior-slot fragmentation gap that would split honest slot-$N$ attestation weight between $B$ and a competing sibling, leaving $B$'s share below the 60% threshold.
 
 </details>
 
@@ -1839,14 +1844,14 @@ The following table shows which assumptions each property depends on:
 
 | Property | Structural (S) | Behavioural (A) | Algorithmic (G)                                           |
 | -------- | -------------- | --------------- | --------------------------------------------------------- |
-| P1†     | —             | —              | G-BidAdmit, G-Settle, G-PayAttest, G-PayEpoch, G-Solvency |
+| P1†     | S1, S2         | —              | G-BidAdmit, G-Settle, G-PayAttest, G-PayEpoch, G-Solvency |
 | P2‡     | S1, S2, S4     | A1, A4, A6      | G-Struct, G-Weight, G-Tiebreaker                          |
 | P3       | S1, S2         | A6              | G-BidAdmit, G-PayAttest, G-PayEpoch, G-Slashing           |
 | P4       | S2, S4         | —              | G-Struct, G-BlockAdmit                                    |
 
-† P1 additionally relies on the strengthening hypothesis **`parent_remains_canonical(trace, B)`** — parent(B) remains in the canonical chain of every honest validator at every step of the trace — which closes the split-vote-at-slot-$N$ reorg gap that would otherwise let parent($B$) lose canonicity (and $B$'s IOU with it) under H7's 40% reveal threshold. The orthogonal late-prior-slot gap is already excluded by P1's own 60%-honest-quorum hypothesis on $B$, so `parent_in_previous_slot` is not needed for P1.
+† P1's statement (§4) embeds two strengthening hypotheses on the slot-$N$ block $B$, **both load-bearing**: `parent_remains_canonical(trace, B)` — parent(B) remains in the canonical chain of every honest validator at every step of the trace — closes the split-vote-at-slot-$N$ reorg gap that would otherwise let parent($B$) lose canonicity (and $B$'s IOU with it); and `parent_in_previous_slot(B)` — $B$'s parent is at slot $B.\mathrm{slot} - 1$ — closes the late-prior-slot fragmentation gap that would otherwise split honest slot-$N$ attestation weight between $B$ and a late-released sibling, leaving $B$'s share below the 60% same-slot quorum Path B requires. Together with **S1** and **S2**, the two strengthenings let the P1 proof derive the 60% quorum from the "timely publication" hypothesis.
 
-‡ P2 additionally relies on **both** strengthening hypotheses: `parent_remains_canonical(trace, B)` (above) and **`parent_in_previous_slot(B)`** — $B$'s parent is at slot $B.\mathrm{slot} - 1$ — which closes the late-prior-slot gap exploitable by a colluding slot-$N{-}1$ / slot-$N$ Byzantine pair (and, by extension, every multi-missing-slot variant between parent($B$) and $B$). Both are documented in §4 along with the open work to weaken them (likely by tightening A6's reveal threshold or adding a "no competing block of greater real weight at $t_{\mathrm{rev}}$" check).
+‡ P2's statement (§4) embeds the same two strengthening hypotheses as P1 (footnote †): `parent_remains_canonical(trace, B)` and `parent_in_previous_slot(B)`. P2's proof leans on both explicitly — `parent_remains_canonical` excludes the split-vote-at-slot-$N$ attack, and `parent_in_previous_slot` excludes the late-prior-slot attack (and, by extension, every multi-missing-slot variant between parent($B$) and $B$). Both are documented in §4 along with the open work to weaken them (likely by tightening A6's reveal threshold or adding a "no competing block of greater real weight at $t_{\mathrm{rev}}$" check).
 
 Every entry in the **Algorithmic (G)** column is illustrated by a pseudocode sketch in §8.3 (with the full body discharged as a lemma in the formal treatment). Every entry in the **Behavioural (A)** column is grounded in a specific line of the §5 handlers (see §8.2). The **Structural (S)** column lists the standing system-level assumptions used.
 
