@@ -194,9 +194,9 @@ This is the foundation of Property P4 (Data availability for chain inclusion) be
 
 Each property is stated here informally and revisited precisely as we walk through the lifecycle. Each is backed by lemmas in the companion formal treatment.
 
-**P1: Unconditional payment to the proposer.** *Let N be a slot whose parent is a block from slot N−1 that remains in the canonical chain at every later time.* If a beacon block at slot $N$ including a valid bid is proposed in a timely fashion extending that parent, the bid amount is paid to the proposer's fee recipient, with the on-chain payment commitment recorded within at most two epochs after $N$. The builder cannot commit to a bid and then avoid paying.
+**P1: Unconditional payment to the proposer.** *Assume that there exists a beacon block B' from slot N−1 remains in the canonical chain at every later time.* If a beacon block at slot $N$ including a valid bid is proposed in a timely fashion extending $B'$, the bid amount is paid to the proposer's fee recipient, with the on-chain payment commitment recorded within at most two epochs after $N$. The builder cannot commit to a bid and then avoid paying.
 
-**P2: Builder revealing protection.** *Let N be a slot whose parent is a block from slot N−1 that remains in the canonical chain at every later time.* If an honest builder for slot $N$ reveals, then its `bid.block_hash` is in the payload hash chain of the canonical beacon chain — equivalently, the block carrying its bid is FULL on chain (and by P4 below, the corresponding payload and blob data are available + valid).
+**P2: Builder revealing protection.** *Assume that there exists a beacon block from slot N−1 remains in the canonical chain at every later time.* If an honest builder for slot $N$ reveals, then its `bid.block_hash` is in the payload hash chain of the canonical beacon chain — equivalently, the block carrying its bid is FULL on chain (and by P4 below, the corresponding payload and blob data are available + valid).
 
 **P3: Builder withholding protection.** An honest builder that withholds its execution payload is not charged, and the proposer is not paid.
 
