@@ -777,7 +777,7 @@ def get_weight(store, (r, status)):
     # Otherwise: sum effective balances of validators whose latest vote
     # supports this node (per is_supporting_vote below).
     return sum(effective_balance(v) for v in active_validators(store)
-               if is_supporting_vote(store, latest_message(v), (r, status)))
+               if is_supporting_vote(store, (r, status), latest_message(v)))
 ```
 
 **`is_supporting_vote`.** Has two cases.
@@ -787,7 +787,7 @@ def get_weight(store, (r, status)):
 *Case 2 (`vote.root ≠ r` — descendant vote).* The FULL/EMPTY attribution at an ancestor is derived from the chain-structural `parentStatus` declarations read by `get_ancestor`, never from the voter's `payload_present` field.
 
 ```python
-def is_supporting_vote(store, vote, (r, status)):
+def is_supporting_vote(store, (r, status), vote):
     if vote.root == r:                                   # ── Case 1: direct vote on this block
         if status == PENDING:
             return True                                  # PENDING: every vote supports
