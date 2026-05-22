@@ -4,7 +4,7 @@
 
 EIP-7732 enshrines proposer-builder separation into Ethereum's consensus protocol. This is a large change: it restructures how blocks are produced, introduces a new staked actor (the builder), splits each block into a beacon-block half (broadcast at slot start) and an execution-payload half (revealed separately by the builder), and creates an unconditional payment mechanism that removes the need for trusted relays.
 
-This document is the first part of a security analysis of ePBS. We walk through the protocol's lifecycle, identify five externally observable properties (organised in three categories) that the design is meant to guarantee, plus a parametric non-trustless variant, and trace where in the spec code each guarantee is enforced. Where the argument requires facts about internal spec functions we have not fully presented here, we state those facts as explicit assumptions and show how the properties follow. A companion formal treatment, currently in progress, will discharge every assumption with line-level proofs against the complete spec pseudocode.
+This document is the first part of a security analysis of ePBS. We walk through the protocol's lifecycle, identify six externally observable properties (organised in three categories) that the design is meant to guarantee, plus a parametric non-trustless variant, and trace where in the spec code each guarantee is enforced. Where the argument requires facts about internal spec functions we have not fully presented here, we state those facts as explicit assumptions and show how the properties follow. A companion formal treatment, currently in progress, will discharge every assumption with line-level proofs against the complete spec pseudocode.
 
 **Who should read this.** Anyone who wants a rigorous but readable account of how ePBS works: what changed from pre-ePBS, why, and what guarantees the protocol provides. We assume familiarity with Ethereum's consensus layer (Gasper, LMD-GHOST, FFG, attestation committees, fork choice). We do not assume prior knowledge of EIP-7732.
 
@@ -42,7 +42,7 @@ Every name below is a pedagogical helper, not a spec function. Each one abstract
 - **`bid(B)`, `head(chain)`, `child(chain, B)`** — "the bid carried by block B", i.e., `B.body.signed_execution_payload_bid.message` (so `bid(B).block_hash`, `bid(B).parent_block_hash`, etc. are the corresponding fields of the `ExecutionPayloadBid` SSZ container). `head(chain)` is the head block of a canonical chain (the latest block in the sequence). `child(chain, B)` is B's unique canonical child on `chain` (the block whose `parent_root` equals B's hash-tree root); defined formally in §3.
 - **`block_status(chain, B)`, `parentStatus(B)`** — `block_status(chain, B)` is the FULL / EMPTY / undefined classifier defined in §3. `parentStatus(B)` is shorthand for "B's bid declares its parent as FULL or EMPTY": FULL if `bid(B).parent_block_hash == state.latest_execution_payload_bid.block_hash` at B's processing time, EMPTY otherwise. Used in §8 / §9 to refer to a block's *declared* view of its parent.
 - **`active_validators(store)`, `latest_message(v)`, `effective_balance(v)`, `child_blocks_of(blocks, r)`** — Pedagogical helpers in the §6 fork-choice machinery and §9 G-assumption sketches; abbreviate `get_active_validator_indices(state, get_current_epoch(state))`, `store.latest_messages[v]`, `state.validators[v].effective_balance`, and the children-of-`r` filter (over the filtered block tree `blocks`) that `get_node_children` (`fork-choice.md` line 555) applies, respectively.
-- **`parent_remains_canonical(B)`** — The strengthening hypothesis embedded in P1, P3 (trustless case), and P5's statements (§4): "parent($B$) remains in the canonical chain of every honest validator at every later time". Rules out a configuration where a Byzantine slot-$N$ proposer publishes $B$ late and fragments honest votes between $B$'s branch and a competing branch under an older common ancestor, causing parent($B$) to lose canonicity. The companion missing-slot configuration (a colluding slot-$N{-}1$ / slot-$N$ Byzantine pair exploiting a missing intervening slot) is excluded by P1's "$B$ extends $B'$ at slot $N{-}1$" precondition, so it does not need a separate strengthening hypothesis. P3's non-trustless case substitutes the confirmation rule's $\Sigma_R$ (§5 Phase 3 A1b) for this hypothesis. Not a spec function; see §4 for full motivation and open work to weaken it.
+- **`parent_remains_canonical(B)`** — The strengthening hypothesis embedded in P1, P4 (trustless case), and P6's statements (§4): "parent($B$) remains in the canonical chain of every honest validator at every later time". Rules out a configuration where a Byzantine slot-$N$ proposer publishes $B$ late and fragments honest votes between $B$'s branch and a competing branch under an older common ancestor, causing parent($B$) to lose canonicity. The companion missing-slot configuration (a colluding slot-$N{-}1$ / slot-$N$ Byzantine pair exploiting a missing intervening slot) is excluded by P1's "$B$ extends $B'$ at slot $N{-}1$" precondition, so it does not need a separate strengthening hypothesis. P4's non-trustless case substitutes the confirmation rule's $\Sigma_R$ (§5 Phase 3 A1b) for this hypothesis. Not a spec function; see §4 for full motivation and open work to weaken it.
 
 </details>
 
@@ -93,7 +93,7 @@ ePBS introduces one new actor and modifies the role of existing ones.
 
 ## 3. How an execution payload becomes part of the chain
 
-> **TL;DR.** ePBS splits each block into two pieces that propagate separately: the **beacon block** carries consensus data and the builder's bid; the **execution payload** is revealed later by the builder. The beacon chain stores **bids** (hashes), not payloads, so anything the protocol can guarantee about payloads is expressed in terms of hashes. We define a function `block_status(chain, B)` that yields FULL/EMPTY for a (chain, block) pair, and a **payload hash chain**: the sequence of `bid.block_hash` values from FULL blocks on the canonical chain. A payload hash is **on chain** iff it belongs to this chain. A revealed execution payload is considered fully delivered only when both the payload and the associated blob data are available; P2 (§4) promotes hash-on-chain to "payload available + valid + blob data available".
+> **TL;DR.** ePBS splits each block into two pieces that propagate separately: the **beacon block** carries consensus data and the builder's bid; the **execution payload** is revealed later by the builder. The beacon chain stores **bids** (hashes), not payloads, so anything the protocol can guarantee about payloads is expressed in terms of hashes. We define a function `block_status(chain, B)` that yields FULL/EMPTY for a (chain, block) pair, and a **payload hash chain**: the sequence of `bid.block_hash` values from FULL blocks on the canonical chain. A payload hash is **on chain** iff it belongs to this chain. A revealed execution payload is considered fully delivered only when both the payload and the associated blob data are available; P3 (§4) promotes hash-on-chain to "payload available + valid + blob data available".
 
 ### Two pointers, two chains
 
@@ -173,7 +173,7 @@ This enumeration produces the chain in *reverse* execution order (head-to-genesi
 
 > **Definition (Payload hash on chain).** A payload hash $h$ is **on chain** if it belongs to the payload hash chain of the canonical beacon chain at the time of inspection.
 
-This is as much as we can say from on-chain data alone: $h$ is on chain iff some canonical bid commits to $h$ *and* some subsequent canonical bid references $h$ as its parent. Both bids are visible in the canonical chain; their composition certifies $h$'s on-chain membership. P2 below promotes this hash-level fact to a payload-level guarantee: a hash on chain implies the corresponding payload (and its blob data) is available and valid.
+This is as much as we can say from on-chain data alone: $h$ is on chain iff some canonical bid commits to $h$ *and* some subsequent canonical bid references $h$ as its parent. Both bids are visible in the canonical chain; their composition certifies $h$'s on-chain membership. P3 below promotes this hash-level fact to a payload-level guarantee: a hash on chain implies the corresponding payload (and its blob data) is available and valid.
 
 ### Data availability: payload + blob data
 
@@ -186,7 +186,7 @@ This is as much as we can say from on-chain data alone: $h$ is on chain iff some
 
 **Both halves are required for chain inclusion.** For block B at slot N to land on chain as FULL, slot N+1's fork-choice check needs a PTC majority on **both** signals: payload arrival AND blob-data availability. If either majority is missing (and no proposer-side fallback fires), no subsequent block declares B FULL and B is EMPTY on chain. The exact mechanism (the fork-choice helper and the proposer-side fallbacks) is detailed in §6.
 
-This is the foundation of Property P2 (Data availability for chain inclusion) below.
+This is the foundation of Property P3 (Data availability for chain inclusion) below.
 
 ### The bid container and its two payment fields
 
@@ -233,7 +233,7 @@ Three of these fields are the ones §3 has been using all along: `parent_block_h
 
 ## 4. Properties
 
-> **TL;DR.** Five externally observable properties P1–P5, organised in three categories. **Category A — payment-trustlessness-independent**: P1 (block safety) and P2 (data availability for chain inclusion); these hold regardless of which payment field the builder uses. **Category B — payment-trustlessness-dependent**: P3 (builder revealing protection) and P4 (builder withholding protection); each has a unified conclusion with two assumption-set cases, one per case. **Category C — trustless-payment-only**: P5 (unconditional payment), which has no analogue when `execution_payment` is used. All five are claims an observer with full visibility of network messages and on-chain state can verify, without inspecting any node's internal state.
+> **TL;DR.** Six externally observable properties P1–P6, organised in three categories. **Category A — payment-trustlessness-independent**: P1 (block safety), P2 (payload-independent consensus progress), and P3 (data availability for chain inclusion); these hold regardless of which payment field the builder uses. **Category B — payment-trustlessness-dependent**: P4 (builder revealing protection) and P5 (builder withholding protection); each has a unified conclusion with two assumption-set cases, one per case. **Category C — trustless-payment-only**: P6 (unconditional payment), which has no analogue when `execution_payment` is used. All six are claims an observer with full visibility of network messages and on-chain state can verify, without inspecting any node's internal state.
 
 Each property is stated here informally and revisited precisely as we walk through the lifecycle. The two cases are introduced in §3 ("The bid container and its two payment fields"); we refer to them here as the *trustless case* (when `bid.value > 0`) and the *non-trustless case* (when `bid.execution_payment > 0` and `bid.value = 0`, delivered off-protocol).
 
@@ -245,18 +245,20 @@ These hold regardless of which payment field the builder uses. They are pure con
 
 > **Why P1 is stated this way.** What we really want to claim is stronger: *ePBS does not introduce any new reorg attack against a timely block*. Proving that directly would require running the same execution on both pre-ePBS and ePBS and showing the canonical chains agree, which is too complex for this kind of document. So we prove P1 instead: under the same conditions that would have made $B$ canonical pre-ePBS (parent stays canonical, block is timely), $B$ is still canonical under ePBS. P1 is what we prove in place of the "no new reorg attacks" claim.
 
-**P2: Data availability for chain inclusion.** Assume **S2** (β < 20%, giving an honest super-majority of slot-$N{+}1$ attesters) and the per-instance hypothesis that the slot-$N{+}1$ proposer is honest. If a payload hash is in the payload hash chain of the canonical beacon chain (i.e., the hash is on chain in the §3 sense), then the corresponding execution payload is available and valid, and its associated blob data is also available.
+**P2: Consensus progress is payload-independent.** The canonical chain advances based on beacon-block timeliness alone, independent of whether the slot-$N$ execution payload is delivered.
+
+**P3: Data availability for chain inclusion.** Assume **S2** (β < 20%, giving an honest super-majority of slot-$N{+}1$ attesters) and the per-instance hypothesis that the slot-$N{+}1$ proposer is honest. If a payload hash is in the payload hash chain of the canonical beacon chain (i.e., the hash is on chain in the §3 sense), then the corresponding execution payload is available and valid, and its associated blob data is also available.
 
 ### Category B — payment-trustlessness-dependent properties
 
 Each property here has one conclusion with two cases — one when the builder uses trustless payment, one when the builder uses non-trustless payment. The builder follows a different *cautious-reveal protocol* in each case, shown as pseudocode in §5 Phase 3: the trustless protocol uses a 40%-real-weight check; the non-trustless protocol uses a confirmation rule $R$ with assumption set $\Sigma_R$.
 
-**P3: Builder revealing protection.** There exists a protocol an honest builder can follow such that, if the builder reveals its payload at slot $N$ (call the block $B$), then `bid(B).block_hash` is in the payload hash chain of the canonical beacon chain (equivalently, $B$ is FULL on chain; and by P2, the corresponding payload and blob data are available and valid). Two cases:
+**P4: Builder revealing protection.** There exists a protocol an honest builder can follow such that, if the builder reveals its payload at slot $N$ (call the block $B$), then `bid(B).block_hash` is in the payload hash chain of the canonical beacon chain (equivalently, $B$ is FULL on chain; and by P3, the corresponding payload and blob data are available and valid). Two cases:
 
 - *Trustless (`bid.value > 0`).* Assume $B$ extends a block $B'$ at slot $N{-}1$, **S1** (synchrony), **S2** (β < 20%), **S3** (slot-$N$ PTC majority is honest), and `parent_remains_canonical(B)` (defined below). The builder follows the trustless cautious-reveal protocol (§5 Phase 3).
 - *Non-trustless (`bid.execution_payment > 0`, `bid.value = 0`).* Assume **S1**, **S3** (slot-$N$ PTC majority is honest), and the rule-specific assumption set $\Sigma_R$ associated with the builder's confirmation rule $R$. The builder follows the non-trustless cautious-reveal protocol (§5 Phase 3).
 
-**P4: Builder withholding protection.** There exists a protocol an honest builder can follow such that, if the builder withholds its execution payload, the protocol does not charge it. Two cases:
+**P5: Builder withholding protection.** There exists a protocol an honest builder can follow such that, if the builder withholds its execution payload, the protocol does not charge it. Two cases:
 
 - *Trustless (`bid.value > 0`).* Assume **S1**, **S2**, and the builder follows the trustless cautious-reveal protocol (§5 Phase 3). The proof routes through the IOU machinery (Path B's 60% quorum threshold + the Byzantine-budget arithmetic) and, in the equivocation sub-case, through `ProposerSlashing` inclusion.
 - *Non-trustless (`bid.execution_payment > 0`, `bid.value = 0`).* No assumptions needed. The claim is trivially true: no `BuilderPendingPayment` IOU is created when `bid.value = 0` (cf. §3 and `process_execution_payload_bid` line "Record the pending payment if there is some payment", [beacon-chain.md:1459](consensus-specs/specs/gloas/beacon-chain.md#L1459)), so no charging path exists in the first place. The builder cannot be debited by the protocol regardless of reveal or withhold choice. Failure of an off-protocol `execution_payment` promise is a reputation/economic problem between the builder and the proposer, outside the consensus protocol's scope.
@@ -265,28 +267,28 @@ Each property here has one conclusion with two cases — one when the builder us
 
 This category contains exactly one property: the unconditional-payment guarantee that defines the trustless case. There is no analogue in the non-trustless case: the protocol does not enforce `execution_payment` at all, so no on-chain mechanism can guarantee the proposer is paid.
 
-**P5: Unconditional payment to the proposer.** Let $B$ be a block at slot $N$ with `bid.value > 0` extending a block $B'$ at slot $N{-}1$. Assume **S1**, **S2**, and `parent_remains_canonical(B)`. If $B$ is proposed in a timely fashion, the protocol records an on-chain payment commitment to the proposer's `fee_recipient` (a `BuilderPendingWithdrawal` entry queued from the builder's on-chain stake) within at most two epochs after $N$. The actual execution-layer credit follows via `apply_withdrawals` in a subsequent block. The builder cannot commit to a trustless bid and then avoid this on-chain commitment.
+**P6: Unconditional payment to the proposer.** Let $B$ be a block at slot $N$ with `bid.value > 0` extending a block $B'$ at slot $N{-}1$. Assume **S1**, **S2**, and `parent_remains_canonical(B)`. If $B$ is proposed in a timely fashion, the protocol records an on-chain payment commitment to the proposer's `fee_recipient` (a `BuilderPendingWithdrawal` entry queued from the builder's on-chain stake) within at most two epochs after $N$. The actual execution-layer credit follows via `apply_withdrawals` in a subsequent block. The builder cannot commit to a trustless bid and then avoid this on-chain commitment.
 
-The remainder of this section discusses the fee-recipient destination, the adversarial model the proofs rely on, and the strengthening hypothesis embedded in P1, P3 (trustless case), and P5.
+The remainder of this section discusses the fee-recipient destination, the adversarial model the proofs rely on, and the strengthening hypothesis embedded in P1, P4 (trustless case), and P6.
 
 **Why the fee recipient and not the validator's balance.** *The bid is paid to the proposer's `fee_recipient` (an execution-layer address) rather than added to the validator's consensus-layer balance.* This follows the same convention used pre-ePBS for execution-layer fees: staking pools and similar operators rely on this separation because keeping consensus rewards apart from execution-layer revenue makes accounting and revenue distribution to delegators much simpler. Under ePBS, the only difference is *who* drives the credit (the builder, via `BuilderPendingWithdrawal`); the destination address remains the same. The same `fee_recipient` field is the destination for both `value` and `execution_payment`; the difference is only in *how* the payment lands there.
 
-**Adversarial model.** Three structural assumptions are catalogued in §9.1: network synchrony (**S1**, Δ < $T_{\mathrm{att}}$), a per-committee Byzantine bound of β < 20% (**S2**), and a PTC Byzantine bound < 50% (**S3**). Each property above lists the subset of {S1, S2, S3} it uses; not every property uses all three. P2 additionally names a per-instance honesty hypothesis ("the slot-$N{+}1$ proposer is honest") that is not derivable from S2 or S3 because the proposer is a single validator. P3's non-trustless case imports the rule-specific assumption set $\Sigma_R$ associated with the builder's confirmation rule.
+**Adversarial model.** Three structural assumptions are catalogued in §9.1: network synchrony (**S1**, Δ < $T_{\mathrm{att}}$), a per-committee Byzantine bound of β < 20% (**S2**), and a PTC Byzantine bound < 50% (**S3**). Each property above lists the subset of {S1, S2, S3} it uses; not every property uses all three. P3 additionally names a per-instance honesty hypothesis ("the slot-$N{+}1$ proposer is honest") that is not derivable from S2 or S3 because the proposer is a single validator. P4's non-trustless case imports the rule-specific assumption set $\Sigma_R$ associated with the builder's confirmation rule.
 
 <details>
-<summary><b>Why the strengthening precondition is needed for P1, P3 (trustless case), and P5</b> (click to expand)</summary>
+<summary><b>Why the strengthening precondition is needed for P1, P4 (trustless case), and P6</b> (click to expand)</summary>
 
-The clause `parent_remains_canonical(B)`, embedded in P1, P3 (trustless case), and P5 (read "parent stays canonical forever"), rules out a reorg scenario where the property would otherwise fail even when the builder behaved honestly. Without this clause, a Byzantine slot-$N$ proposer can publish $B$ late in the slot so that some honest validators don't see $B$ in time. Those validators vote for a different descendant of an older ancestor (a sibling of parent($B$)), pulling enough weight away from $B$'s branch that parent($B$) loses canonicity at the next slot, and $B$ goes with it.
+The clause `parent_remains_canonical(B)`, embedded in P1, P4 (trustless case), and P6 (read "parent stays canonical forever"), rules out a reorg scenario where the property would otherwise fail even when the builder behaved honestly. Without this clause, a Byzantine slot-$N$ proposer can publish $B$ late in the slot so that some honest validators don't see $B$ in time. Those validators vote for a different descendant of an older ancestor (a sibling of parent($B$)), pulling enough weight away from $B$'s branch that parent($B$) loses canonicity at the next slot, and $B$ goes with it.
 
-**On the "extending $B'$" clause.** P1, P3 (trustless case), and P5 all carry the precondition "$B$ extends $B'$, a block at slot $N{-}1$". This forces $B$'s parent to be at slot $N{-}1$ and rules out a separate attack: a colluding Byzantine pair at slots $N{-}1$ and $N$ can otherwise mount a *missing-slot configuration* where the slot-$N$ proposer publishes $B$ parented at an older ancestor, fragmenting honest slot-$N$ attestation weight. We do not call this out as a separate strengthening hypothesis because "extending $B'$" already encodes it. (Full attack trace: the slot-$N{-}1$ proposer withholds; the slot-$N$ proposer publishes $B$ parented at $H$ from slot $N{-}2$, skipping $N{-}1$; the slot-$N{-}1$ proposer simultaneously releases a withheld sibling $B^*$ parented at $H$; honest slot-$N$ attestations split between $B$ and $B^*$; at slot $N{+}1$ with proposer boost reset, $B^*$ outweighs $B$ and reorgs it. The attack works because $B$'s parent is $H$, not a slot-$N{-}1$ block; the "extending $B'$" clause rules exactly this out by requiring $B$'s parent to be at slot $N{-}1$.)
+**On the "extending $B'$" clause.** P1, P4 (trustless case), and P6 all carry the precondition "$B$ extends $B'$, a block at slot $N{-}1$". This forces $B$'s parent to be at slot $N{-}1$ and rules out a separate attack: a colluding Byzantine pair at slots $N{-}1$ and $N$ can otherwise mount a *missing-slot configuration* where the slot-$N$ proposer publishes $B$ parented at an older ancestor, fragmenting honest slot-$N$ attestation weight. We do not call this out as a separate strengthening hypothesis because "extending $B'$" already encodes it. (Full attack trace: the slot-$N{-}1$ proposer withholds; the slot-$N$ proposer publishes $B$ parented at $H$ from slot $N{-}2$, skipping $N{-}1$; the slot-$N{-}1$ proposer simultaneously releases a withheld sibling $B^*$ parented at $H$; honest slot-$N$ attestations split between $B$ and $B^*$; at slot $N{+}1$ with proposer boost reset, $B^*$ outweighs $B$ and reorgs it. The attack works because $B$'s parent is $H$, not a slot-$N{-}1$ block; the "extending $B'$" clause rules exactly this out by requiring $B$'s parent to be at slot $N{-}1$.)
 
 **An honest builder can self-enforce these conditions.** Under network synchrony, an honest builder observes the gossip layer by bid-construction time. If parent($B$) is at risk of reorg (e.g., late-published or with low attestation support) or any slot between the canonical head and $N$ is observably empty, the builder declines to bid: forgoing one slot's MEV is strictly safer than bidding into a configuration where the trustless guarantees are known to fail.
 
-**Why P3's non-trustless case does not embed the same strengthening.** With non-trustless payment, the honest builder uses a confirmation rule $R$ that *itself* certifies "the block will remain canonical forever" before revealing. So if the rule has any of the reorg attacks above as a counter-example, the rule would not have returned `confirmed` in the first place. The attacks are ruled out by what $R$ means, not by an extra hypothesis we add. The price is that the builder must wait until $R$ confirms, so the reveal window is tighter.
+**Why P4's non-trustless case does not embed the same strengthening.** With non-trustless payment, the honest builder uses a confirmation rule $R$ that *itself* certifies "the block will remain canonical forever" before revealing. So if the rule has any of the reorg attacks above as a counter-example, the rule would not have returned `confirmed` in the first place. The attacks are ruled out by what $R$ means, not by an extra hypothesis we add. The price is that the builder must wait until $R$ confirms, so the reveal window is tighter.
 
 </details>
 
-The remainder of this document shows how the protocol's algorithms enforce each of P1–P5. §5 Phase 3 presents the cautious-reveal protocols an honest builder can follow in each case. §8 walks through the adversarial scenarios in the trustless case. §9 (work-in-progress) provides the formal-verification contract: a self-contained set of assumptions that, combined with the code in §5–§7, suffices to prove the five properties.
+The remainder of this document shows how the protocol's algorithms enforce each of P1–P6. §5 Phase 3 presents the cautious-reveal protocols an honest builder can follow in each case. §8 walks through the adversarial scenarios in the trustless case. §9 (work-in-progress) provides the formal-verification contract: a self-contained set of assumptions that, combined with the code in §5–§7, suffices to prove the six properties.
 
 ---
 
@@ -296,7 +298,7 @@ The remainder of this document shows how the protocol's algorithms enforce each 
 
 **State and store.** *Two data structures recur throughout this section.* The **state** (`BeaconState`) is the consensus-layer snapshot associated with a specific block. It is computed deterministically: the state after block B is the result of applying B to the state of B's parent, i.e., `state(B) = process_block(state(parent(B)), B)`. No other input is needed: a node that knows the genesis state and the chain of blocks can recompute any block's state. Under ePBS, this computation is split in two: `process_block` applies the consensus-layer transition (including deferred execution effects from the parent's execution payload via `process_parent_execution_payload`, bid verification, attestation processing, withdrawals), while the current slot's execution payload is verified separately by `verify_execution_payload_envelope` when the builder reveals.
 
-**The store reflects per-node observations, not deterministic state.** Unlike the state, which is per-block and deterministic, the store records what a particular node has observed from the network: all received blocks (`store.blocks`), the state after processing each block's consensus layer (`store.block_states`), attestations, PTC votes, and (new under ePBS) `store.payloads`, which maps a block root to the payload (spec: `ExecutionPayloadEnvelope`) that the builder revealed for that block. `store.payloads` is populated only when the node locally receives and verifies the payload, which is why it serves as the **gate** for the slot-N+1 chain-inclusion check that decides FULL/EMPTY on chain (§3); a node-internal invariant that supports several externally observable properties (notably P2 data availability and P3 revealing protection in both cases). Phase 5 makes this gate explicit when describing the fork-choice rule.
+**The store reflects per-node observations, not deterministic state.** Unlike the state, which is per-block and deterministic, the store records what a particular node has observed from the network: all received blocks (`store.blocks`), the state after processing each block's consensus layer (`store.block_states`), attestations, PTC votes, and (new under ePBS) `store.payloads`, which maps a block root to the payload (spec: `ExecutionPayloadEnvelope`) that the builder revealed for that block. `store.payloads` is populated only when the node locally receives and verifies the payload, which is why it serves as the **gate** for the slot-N+1 chain-inclusion check that decides FULL/EMPTY on chain (§3); a node-internal invariant that supports several externally observable properties (notably P3 data availability and P4 revealing protection in both cases). Phase 5 makes this gate explicit when describing the fork-choice rule.
 
 A slot under ePBS proceeds through five phases. Below we walk through the phases as a storyline, showing the abstracted code that each actor runs, and connecting each step to the formal property it enforces.
 
@@ -367,7 +369,7 @@ def submit_bid(builder, upcoming_slot, state, proposer_preferences):
 
 **The builder simulates the *consensus-layer* application of the parent's execution payload locally to determine the correct execution chain tip.** The builder needs to know `state.latest_block_hash`, but at this point `apply_parent_execution_payload` (which updates `latest_block_hash`) has not yet run for the current slot; it runs inside `process_block` of the *next* block. The builder resolves this by calling `prepare_execution_payload`, which runs `apply_parent_execution_payload` on a **copy** of the state when building on FULL. The simulation does only what `apply_parent_execution_payload` does in the spec: it processes the parent's execution requests (deposits, withdrawals, consolidations), settles the parent's builder payment, sets `state.execution_payload_availability[parent_slot % SLOTS_PER_HISTORICAL_ROOT] = 1`, and advances `state.latest_block_hash = parent_bid.block_hash`. It does **not** re-execute the parent's transactions in the EVM (that happened when the parent's payload was first verified against the execution engine by `verify_execution_payload_envelope`) and it does **not** touch blob data (blob data participates only in PeerDAS availability sampling, never in the consensus state transition). The network's eventual `process_block` for the next block performs the same deterministic update.
 
-> **Remark on bid commitments.** An honest builder's revealed execution payload necessarily has `block_hash == bid.block_hash` because the same `stored_payload` is used in both phases. A dishonest builder revealing a different payload fails the equality check in `verify_execution_payload_envelope`. This is not a separate property in our list; it is a precondition underlying P3 (builder revealing protection in both cases) that follows from the Phase 0 / Phase 3 honest-builder code by construction.
+> **Remark on bid commitments.** An honest builder's revealed execution payload necessarily has `block_hash == bid.block_hash` because the same `stored_payload` is used in both phases. A dishonest builder revealing a different payload fails the equality check in `verify_execution_payload_envelope`. This is not a separate property in our list; it is a precondition underlying P4 (builder revealing protection in both cases) that follows from the Phase 0 / Phase 3 honest-builder code by construction.
 
 ### Phase 1 — Slot start (t = 0): Proposer publishes the beacon block
 
@@ -413,7 +415,7 @@ def propose(validator, slot, state):
 
 ![Phase 1b — valid block processed](figures/slice-phase1b-v4.png)
 
-*Figure 4c: Block receipt. All nodes run `Process block and update store`; the two new ePBS steps inside are `process_parent_execution_payload` (applies the parent's execution effects if the block declares FULL) and `process_execution_payload_bid` (verifies the bid and records the `BuilderPendingPayment` IOU; Property P5). The pipeline and store-update annotations beside the figure list the sub-steps.*
+*Figure 4c: Block receipt. All nodes run `Process block and update store`; the two new ePBS steps inside are `process_parent_execution_payload` (applies the parent's execution effects if the block declares FULL) and `process_execution_payload_bid` (verifies the bid and records the `BuilderPendingPayment` IOU; Property P6). The pipeline and store-update annotations beside the figure list the sub-steps.*
 
 **Alternative: block missing or invalid; attest for previous head.**
 
@@ -476,9 +478,9 @@ def process_execution_payload_bid(state, block):
 
 **The `BUILDER_INDEX_SELF_BUILD` branch is the escape hatch for solo validators.** A proposer that constructs its own execution payload (without an external builder) takes this branch: `bid.value` must be zero (the proposer does not pay itself), the signature check is skipped, and no IOU is recorded. ePBS does not force any validator to depend on the builder market.
 
-> **Remark on builder solvency at bid time.** The check `can_builder_cover_bid` accounts for **all outstanding `value` obligations** of the builder: both already-approved payments waiting in `builder_pending_withdrawals` and pending bids in `builder_pending_payments` from other slots. A builder cannot overbid across concurrent slots *in the trustless field*. `execution_payment` is **not** in the sum (cf. §3), so the solvency check only constrains trustless commitments. This is a precondition for P5 (unconditional payment): without it, a builder could promise more `value` than it owns and the on-chain payment would not settle.
+> **Remark on builder solvency at bid time.** The check `can_builder_cover_bid` accounts for **all outstanding `value` obligations** of the builder: both already-approved payments waiting in `builder_pending_withdrawals` and pending bids in `builder_pending_payments` from other slots. A builder cannot overbid across concurrent slots *in the trustless field*. `execution_payment` is **not** in the sum (cf. §3), so the solvency check only constrains trustless commitments. This is a precondition for P6 (unconditional payment): without it, a builder could promise more `value` than it owns and the on-chain payment would not settle.
 
-> **Property P5: Unconditional payment is armed.** No money has moved yet, but the IOU (`BuilderPendingPayment`) is now in state. From this point forward, the builder **will pay** if the beacon block is widely attested, regardless of whether it reveals the execution payload. (This callout applies only to the trustless case; in the non-trustless case no IOU is created; cf. P4 non-trustless case in §9.3.)
+> **Property P6: Unconditional payment is armed.** No money has moved yet, but the IOU (`BuilderPendingPayment`) is now in state. From this point forward, the builder **will pay** if the beacon block is widely attested, regardless of whether it reveals the execution payload. (This callout applies only to the trustless case; in the non-trustless case no IOU is created; cf. P5 non-trustless case in §9.3.)
 
 ### Phase 2 — Attestation deadline (t = 25%)
 
@@ -494,7 +496,7 @@ def process_execution_payload_bid(state, block):
 
 ![Phase 2 — threshold not met](figures/slice-phase2-no-reveal-v3.png)
 
-*Figure 5b: Phase 2, cautious threshold never met (trustless case). All three `Decide to release?` evaluations return "not enough yet" (light shade); cumulative real attestation weight never crosses ≥ 40% (Assumption A1a). No payload is broadcast; the IOU persists and falls through to Path B (settled if the 60% quorum is later met; otherwise discarded, per Property P4).*
+*Figure 5b: Phase 2, cautious threshold never met (trustless case). All three `Decide to release?` evaluations return "not enough yet" (light shade); cumulative real attestation weight never crosses ≥ 40% (Assumption A1a). No payload is broadcast; the IOU persists and falls through to Path B (settled if the 60% quorum is later met; otherwise discarded, per Property P5).*
 
 Honest attesters run the fork-choice function and broadcast their vote:
 
@@ -523,7 +525,7 @@ def attest(validator, slot, state, store):
 
 ![Phase 3 — payload revealed](figures/slice-phase3-v8.png)
 
-*Figure 6a: Phase 3, builder reveals. Two separate objects are broadcast: the **payload** (solid violet) and the **blob data** (dashed violet, propagated as `DataColumnSidecar` columns via PeerDAS), each going to both the Attesters' CL and the PTC. The cautious threshold has crossed, so the Builder broadcasts; Attesters run `Process payload and blob data` (CL: `on_execution_payload_envelope` checks `is_data_available` + invokes `verify_execution_payload` on the EL); PTC members observe both signals and (under vote-on-receipt) broadcast the witness vote immediately. If both checks succeed, `store.payloads[root]` is populated; this is the gate consumed by Properties P5 (Path A settlement requires the next block to declare the slot FULL on chain) and P3 (honest reveal opens the gate that the slot-N+1 fork-choice resolves in the builder's favour, in both cases). The fork-choice mechanism that consumes this gate is described in Phase 5.*
+*Figure 6a: Phase 3, builder reveals. Two separate objects are broadcast: the **payload** (solid violet) and the **blob data** (dashed violet, propagated as `DataColumnSidecar` columns via PeerDAS), each going to both the Attesters' CL and the PTC. The cautious threshold has crossed, so the Builder broadcasts; Attesters run `Process payload and blob data` (CL: `on_execution_payload_envelope` checks `is_data_available` + invokes `verify_execution_payload` on the EL); PTC members observe both signals and (under vote-on-receipt) broadcast the witness vote immediately. If both checks succeed, `store.payloads[root]` is populated; this is the gate consumed by Properties P6 (Path A settlement requires the next block to declare the slot FULL on chain) and P4 (honest reveal opens the gate that the slot-N+1 fork-choice resolves in the builder's favour, in both cases). The fork-choice mechanism that consumes this gate is described in Phase 5.*
 
 **Alternative: builder withholds; no payload reaches the network.**
 
@@ -575,13 +577,13 @@ def on_execution_payload_envelope(store, signed_envelope):
 
 **The single line `store.payloads[root] = envelope` is the only place where the gate for FULL chain inclusion opens.** If `verify_execution_payload_envelope` fails (invalid execution payload, EL rejection, blob data unavailable), this line is never reached and `store.payloads[root]` stays empty. Note that `store.payloads` stores the payload itself (not a post-state); the execution-layer state effects are applied later, inside `process_parent_execution_payload` when the next block is processed (see Phase 1b).
 
-**Execution validity gates FULL chain inclusion: a structural invariant, not an external property.** Every honest node has `store.payloads[B.root]` populated *if and only if* B's execution payload was locally received and validated; PTC votes, attestation weight, and proposer declarations cannot create the underlying data that the slot-N+1 chain-inclusion check (§3) requires. This is the strongest structural guarantee ePBS makes, but it is a per-node invariant: an external observer cannot directly inspect any node's store. They observe its consequences instead, most notably the fact that subsequent blocks declaring FULL on chain (via `bid.parent_block_hash`) only land on the canonical chain when the parent's execution payload was actually delivered, which is what Properties P2 (data availability for chain inclusion) and P3 (revealing protection, both cases) capture externally.
+**Execution validity gates FULL chain inclusion: a structural invariant, not an external property.** Every honest node has `store.payloads[B.root]` populated *if and only if* B's execution payload was locally received and validated; PTC votes, attestation weight, and proposer declarations cannot create the underlying data that the slot-N+1 chain-inclusion check (§3) requires. This is the strongest structural guarantee ePBS makes, but it is a per-node invariant: an external observer cannot directly inspect any node's store. They observe its consequences instead, most notably the fact that subsequent blocks declaring FULL on chain (via `bid.parent_block_hash`) only land on the canonical chain when the parent's execution payload was actually delivered, which is what Properties P3 (data availability for chain inclusion) and P4 (revealing protection, both cases) capture externally.
 
 The builder's **payment** is not settled at this point. It is settled later, when the next block's `process_parent_execution_payload` → `apply_parent_execution_payload` → `settle_builder_payment` chain fires; this is Path A of the unconditional payment mechanism. The full mechanism, including what happens when the builder withholds, is described in §7.
 
 #### Cautious-reveal protocols an honest builder can follow
 
-The spec prescribes only the minimal honest rule: reveal when the block is timely and is the head of the local chain ([`builder.md`](https://github.com/ethereum/consensus-specs/blob/master/specs/gloas/builder.md)). The §4 property statements (P3, P4) reference *cautious-reveal protocols* that strengthen this minimum. Two protocols, one per case; an honest builder picks the one that matches their bid's payment field:
+The spec prescribes only the minimal honest rule: reveal when the block is timely and is the head of the local chain ([`builder.md`](https://github.com/ethereum/consensus-specs/blob/master/specs/gloas/builder.md)). The §4 property statements (P4, P5) reference *cautious-reveal protocols* that strengthen this minimum. Two protocols, one per case; an honest builder picks the one that matches their bid's payment field:
 
 **Protocol A1a — trustless cautious-reveal (`bid.value > 0`).** Reveal only when all three conditions hold: (i) the builder's local clock satisfies $t_{\mathrm{rev}} \geq T_{\mathrm{att}}$; (ii) at least $\mathtt{PROPOSER\_SCORE\_BOOST = 40\%}$ of a slot committee's effective balance in real attestations supporting the block; (iii) no proposer equivocation by `block.proposer_index` for `block.slot` is visible. Condition (i) closes the synchrony gap that would otherwise allow an equivocation broadcast strictly before $T_{\mathrm{att}} - \Delta$ to split honest attesters at $T_{\mathrm{att}}$ without being visible to the builder before reveal time.
 
@@ -612,7 +614,7 @@ def reveal_payload(builder, block, ...):
 
 **Protocol A1b — non-trustless cautious-reveal (`bid.execution_payment > 0`, `bid.value = 0`).** Fix a *confirmation rule* $R$: a function that, given a node's view of the gossip layer and beacon-chain state, returns `confirmed` or `unconfirmed` for a beacon block. Fix the rule's *assumption set* $\Sigma_R$: the network-and-adversary assumptions under which $R$ is sound. We say $R$ is **provably secure under $\Sigma_R$** if, under every execution satisfying $\Sigma_R$, every block confirmed with $R$ remains in the canonical chain at every later time. A1b says: reveal only when (i) $R(\text{view}, B)$ returns `confirmed` at $t_{\mathrm{rev}}$, and (ii) $t_{\mathrm{rev}}$ is early enough that the broadcast payload + blob data reach the slot-$N{+}1$ builder, proposer, and PTC before their respective deadlines under **S1** (the 75% payload-arrival deadline `get_payload_due_ms()`, the PTC-vote deadline, and the slot-$N{+}1$ bid-construction time).
 
-*Concrete example.* The **[Fast Confirmation Rule (FCR)](https://fastconfirm.it)** is one provably-secure choice for $R$. Its $\Sigma_{\mathrm{FCR}}$ is the conjunction of network synchrony, a Byzantine-fraction bound, and a quorum-threshold predicate on the block's accumulated attestations. An honest builder choosing FCR for $R$ inherits $\Sigma_{\mathrm{FCR}}$ as the assumption set under which P3's non-trustless case holds. Other confirmation rules with different $\Sigma_R$ (e.g., trading network strength for adversarial strength) are equally admissible; the property P3 is parametric in $R$.
+*Concrete example.* The **[Fast Confirmation Rule (FCR)](https://fastconfirm.it)** is one provably-secure choice for $R$. Its $\Sigma_{\mathrm{FCR}}$ is the conjunction of network synchrony, a Byzantine-fraction bound, and a quorum-threshold predicate on the block's accumulated attestations. An honest builder choosing FCR for $R$ inherits $\Sigma_{\mathrm{FCR}}$ as the assumption set under which P4's non-trustless case holds. Other confirmation rules with different $\Sigma_R$ (e.g., trading network strength for adversarial strength) are equally admissible; the property P4 is parametric in $R$.
 
 <details>
 <summary><b>Pseudocode (A1b)</b> (click to expand)</summary>
@@ -847,7 +849,7 @@ Under PeerDAS asymmetric sampling, the two can disagree: a malicious builder may
 > - A **malicious PTC majority producing a False-DA quorum alone can force EMPTY**: `should_build_on_full` strips the honest proposer's discretion to build on FULL.
 > - A **malicious PTC majority producing only a False-timeliness quorum** (with a True-DA quorum) cannot force EMPTY by itself: the honest proposer's fallback (c) saves FULL. This case is the one where proposer collusion is required.
 >
-> Under the structural assumption **S3** (honest PTC majority), no False-DA quorum arises against an honestly revealed payload, so honest builders are protected (this is the setting in which P2 holds). Outside S3, a malicious PTC majority producing a False-DA quorum can force EMPTY without proposer collusion: the cost of treating the PTC's collective DA judgment as authoritative.
+> Under the structural assumption **S3** (honest PTC majority), no False-DA quorum arises against an honestly revealed payload, so honest builders are protected (this is the setting in which P3 holds). Outside S3, a malicious PTC majority producing a False-DA quorum can force EMPTY without proposer collusion: the cost of treating the PTC's collective DA judgment as authoritative.
 
 ### Fork-choice machinery in detail
 
@@ -941,13 +943,13 @@ def on_block(store, signed_block):
 
 ## 7. Payment mechanism (trustless case)
 
-> **TL;DR.** This section describes the mechanism that implements **P5** (unconditional payment) and **P4** (builder withholding protection, trustless). The IOU is recorded at bid time (only when `bid.value > 0`); queueing for transfer happens via **Path A** (next block, when the builder reveals) or **Path B** (end of epoch *e+1*, gated by a 60% attestation quorum). Path A suppresses Path B, so the proposer is paid exactly once. End-to-end, the `BuilderPendingWithdrawal` is **queued** within at most two epochs of the bid's slot (this is the timing bound in P5); the actual EL credit follows when a subsequent block's `apply_withdrawals` drains the queue (typically a few slots later under standard liveness). Path B's quorum is what makes P4 work: a builder who withholds in the absence of honest support is not charged.
+> **TL;DR.** This section describes the mechanism that implements **P6** (unconditional payment) and **P5** (builder withholding protection, trustless). The IOU is recorded at bid time (only when `bid.value > 0`); queueing for transfer happens via **Path A** (next block, when the builder reveals) or **Path B** (end of epoch *e+1*, gated by a 60% attestation quorum). Path A suppresses Path B, so the proposer is paid exactly once. End-to-end, the `BuilderPendingWithdrawal` is **queued** within at most two epochs of the bid's slot (this is the timing bound in P6); the actual EL credit follows when a subsequent block's `apply_withdrawals` drains the queue (typically a few slots later under standard liveness). Path B's quorum is what makes P5 work: a builder who withholds in the absence of honest support is not charged.
 >
-> **Scope.** This section applies only to the trustless case (`bid.value > 0`). In the non-trustless case (`bid.execution_payment > 0`, `bid.value = 0`) no IOU is recorded, no path fires, and there is no corresponding mechanism to document: P3's non-trustless case reveal-protection argument routes through canonicity ($\Sigma_R$) and chain-inclusion (**S3**, honest slot-$N$ PTC majority) rather than through any payment machinery, and P4's non-trustless case is degenerate (cf. §9.3). There is no §7-analogue for the non-trustless case because the protocol has no payment machinery to describe there.
+> **Scope.** This section applies only to the trustless case (`bid.value > 0`). In the non-trustless case (`bid.execution_payment > 0`, `bid.value = 0`) no IOU is recorded, no path fires, and there is no corresponding mechanism to document: P4's non-trustless case reveal-protection argument routes through canonicity ($\Sigma_R$) and chain-inclusion (**S3**, honest slot-$N$ PTC majority) rather than through any payment machinery, and P5's non-trustless case is degenerate (cf. §9.3). There is no §7-analogue for the non-trustless case because the protocol has no payment machinery to describe there.
 
 **The payment mechanism is what gives the trustless case its name.** A proposer that accepts a trustless bid (`bid.value > 0`) can commit to it without trusting the builder, because the payment will arrive regardless of what the builder does. The mechanism below (IOU, Path A, Path B, 60% quorum) is what makes this work. With non-trustless payment, none of this machinery exists, and the proposer is back to trusting the builder.
 
-**Payment under ePBS is deferred, but bounded to a couple of epochs.** Pre-ePBS the proposer's MEV revenue arrived immediately. Under ePBS two settlement paths defer it: Path A fires at the *next* block when the builder reveals; Path B fires at the *end of epoch e+1* when the builder withholds and the beacon block reaches the 60% quorum. **Both paths only enqueue** a `BuilderPendingWithdrawal` in `state.builder_pending_withdrawals`. The actual on-chain debit (builder side) and credit (proposer side) happen later, when `apply_withdrawals` (called from `process_block`) processes the queue in a subsequent block. End-to-end, the proposer's `BuilderPendingWithdrawal` is **queued** within at most two epochs of the bid's slot (this is the timing bound that is part of P5); the final EL credit follows via `apply_withdrawals` within a few additional slots under standard liveness, slightly slower than pre-ePBS in exchange for unconditionality.
+**Payment under ePBS is deferred, but bounded to a couple of epochs.** Pre-ePBS the proposer's MEV revenue arrived immediately. Under ePBS two settlement paths defer it: Path A fires at the *next* block when the builder reveals; Path B fires at the *end of epoch e+1* when the builder withholds and the beacon block reaches the 60% quorum. **Both paths only enqueue** a `BuilderPendingWithdrawal` in `state.builder_pending_withdrawals`. The actual on-chain debit (builder side) and credit (proposer side) happen later, when `apply_withdrawals` (called from `process_block`) processes the queue in a subsequent block. End-to-end, the proposer's `BuilderPendingWithdrawal` is **queued** within at most two epochs of the bid's slot (this is the timing bound that is part of P6); the final EL credit follows via `apply_withdrawals` within a few additional slots under standard liveness, slightly slower than pre-ePBS in exchange for unconditionality.
 
 The payment mechanism has **three stages** with **two paths**:
 
@@ -963,7 +965,7 @@ graph LR
     PBY --> S3
 ```
 
-*Figure 9: Three-stage unconditional payment (trustless case). Stage 1 records the IOU; Stage 2 settles via Path A (next block, when the builder reveals; clears the IOU and suppresses Path B, so the proposer is paid exactly once) or Path B (epoch-boundary 60% quorum check; protects the builder when withholding, per P4); Stage 3 debits the builder's balance via `apply_withdrawals` in a subsequent block.*
+*Figure 9: Three-stage unconditional payment (trustless case). Stage 1 records the IOU; Stage 2 settles via Path A (next block, when the builder reveals; clears the IOU and suppresses Path B, so the proposer is paid exactly once) or Path B (epoch-boundary 60% quorum check; protects the builder when withholding, per P5); Stage 3 debits the builder's balance via `apply_withdrawals` in a subsequent block.*
 
 **Path A** is the happy path. When the builder reveals a valid execution payload, the next block's processing chain (`process_parent_execution_payload` → `apply_parent_execution_payload` → `settle_builder_payment`) appends the payment to `builder_pending_withdrawals`:
 
@@ -999,13 +1001,13 @@ def process_builder_pending_payments(state):
 
 **Path B fires one full epoch after the bid's own epoch ends.** `builder_pending_payments` is a ring buffer of size `2 * SLOTS_PER_EPOCH`, and `process_execution_payload_bid` writes a bid at slot N (in epoch *e*) into the *upper* half (index `SLOTS_PER_EPOCH + (N mod SLOTS_PER_EPOCH)`). Only the *lower* half is checked above. So at the end of epoch *e* the bid is shifted down but not yet examined; throughout epoch *e+1* attestations referencing block N keep accumulating into `payment.weight`; and at the end of epoch *e+1* the bid finally faces the quorum check, settled or discarded. The 2-epoch buffer is sized precisely for this delay so that attestations included up to one epoch after slot N can still count.
 
-**The 60% threshold is what makes P4 work.** Under β < 20% per committee, Byzantine validators alone can contribute at most 20% to `payment.weight`. The quorum is set so that 60% = 40% (real honest support threshold) + 20% (Byzantine budget): if the beacon block has < 40% honest attestation weight, no combination of Byzantine voters can push the quorum over 60%, so a withholding builder is not charged. The threshold lives in this section because it is an implementation parameter; the property it implements (P4) is stated in §4 without referring to the specific 60%/40%/20% calibration.
+**The 60% threshold is what makes P5 work.** Under β < 20% per committee, Byzantine validators alone can contribute at most 20% to `payment.weight`. The quorum is set so that 60% = 40% (real honest support threshold) + 20% (Byzantine budget): if the beacon block has < 40% honest attestation weight, no combination of Byzantine voters can push the quorum over 60%, so a withholding builder is not charged. The threshold lives in this section because it is an implementation parameter; the property it implements (P5) is stated in §4 without referring to the specific 60%/40%/20% calibration.
 
-> **Property P5: Unconditional payment.** For a block at slot N with `bid.value > 0` proposed in a timely fashion (under the §4 strengthening hypothesis `parent_remains_canonical(B)`), the proposer's payment is queued within at most two epochs of slot N: at slot N+1 via Path A when a subsequent block declares the slot FULL on chain, or at the end of epoch *e+1* via Path B when no subsequent block declares the slot FULL (the natural case: the builder withheld). In the Path B case, the beacon block's same-slot attestation weight reaches the 60% quorum because "timely" + the strengthening + S1 + S2 force at least $(1-\beta) W > 0.8 W$ of honest weight on the beacon block; see §9.3 P5 proof Case 1b. After the IOU is cleared by either path, no second payment is ever produced: `process_attestation` skips zero-`amount` entries and `process_builder_pending_payments` checks `weight ≥ quorum` on a zeroed entry, which fails. The payment is therefore single and bounded in time.
+> **Property P6: Unconditional payment.** For a block at slot N with `bid.value > 0` proposed in a timely fashion (under the §4 strengthening hypothesis `parent_remains_canonical(B)`), the proposer's payment is queued within at most two epochs of slot N: at slot N+1 via Path A when a subsequent block declares the slot FULL on chain, or at the end of epoch *e+1* via Path B when no subsequent block declares the slot FULL (the natural case: the builder withheld). In the Path B case, the beacon block's same-slot attestation weight reaches the 60% quorum because "timely" + the strengthening + S1 + S2 force at least $(1-\beta) W > 0.8 W$ of honest weight on the beacon block; see §9.3 P6 proof Case 1b. After the IOU is cleared by either path, no second payment is ever produced: `process_attestation` skips zero-`amount` entries and `process_builder_pending_payments` checks `weight ≥ quorum` on a zeroed entry, which fails. The payment is therefore single and bounded in time.
 
-> **Property P4: Builder withholding protection (trustless).** If the builder withholds and the beacon block does not reach the quorum, the builder is not charged. The 60% threshold + β < 20% calibration ensures Byzantine voters alone cannot drive the quorum over the threshold without honest participation.
+> **Property P5: Builder withholding protection (trustless).** If the builder withholds and the beacon block does not reach the quorum, the builder is not charged. The 60% threshold + β < 20% calibration ensures Byzantine voters alone cannot drive the quorum over the threshold without honest participation.
 
-**A note on the free option (trustless case).** *The same binding-bid mechanism that gives the proposer unconditional payment also gives the builder a short option.* Between bid commitment (`t = 0`, IOU recorded) and the PTC deadline (`t ≈ 9s`), the builder can observe new market information (e.g., centralized-exchange price moves) and choose whether to reveal. If the builder withholds and the beacon block meets the Path B quorum, the builder still pays `bid.value`: exercising the option is not free; its premium is the bid value. The non-trustless case has no such option because no exercise price exists: a non-trustless builder can withhold freely without protocol-side cost. This is a strategic concern, not a positive property, and is therefore not stated as one of P1–P5.
+**A note on the free option (trustless case).** *The same binding-bid mechanism that gives the proposer unconditional payment also gives the builder a short option.* Between bid commitment (`t = 0`, IOU recorded) and the PTC deadline (`t ≈ 9s`), the builder can observe new market information (e.g., centralized-exchange price moves) and choose whether to reveal. If the builder withholds and the beacon block meets the Path B quorum, the builder still pays `bid.value`: exercising the option is not free; its premium is the bid value. The non-trustless case has no such option because no exercise price exists: a non-trustless builder can withhold freely without protocol-side cost. This is a strategic concern, not a positive property, and is therefore not stated as one of P1–P6.
 
 ---
 
@@ -1015,7 +1017,7 @@ def process_builder_pending_payments(state):
 
 We close with a prose summary of adversarial behaviour against an honestly delivered payload, followed by the withheld-payload table and the payment table.
 
-**Scope: trustless case (`bid.value > 0`).** The fork-choice analysis below reads only hashes and PTC votes; it does not consult `value` or `execution_payment`, so it applies identically in the non-trustless case. The payment table is **trustless-only**: in the non-trustless case no `BuilderPendingPayment` IOU is recorded, so payment collapses to "no protocol payment in either direction, regardless of builder behaviour" (cf. P4 non-trustless case in §9.3; degenerate). Off-protocol `execution_payment` outcomes are outside the protocol's scope.
+**Scope: trustless case (`bid.value > 0`).** The fork-choice analysis below reads only hashes and PTC votes; it does not consult `value` or `execution_payment`, so it applies identically in the non-trustless case. The payment table is **trustless-only**: in the non-trustless case no `BuilderPendingPayment` IOU is recorded, so payment collapses to "no protocol payment in either direction, regardless of builder behaviour" (cf. P5 non-trustless case in §9.3; degenerate). Off-protocol `execution_payment` outcomes are outside the protocol's scope.
 
 **Payload delivered (`store.payloads[r]` populated at honest nodes, FULL node exists in the fork-choice tree).** The full enumeration over PTC vote × proposer behaviour is the *combined-interaction table* in §6 (lines after `should_build_on_full`). Reading off that table, two adversarial paths force EMPTY against an honestly revealed payload:
 
@@ -1026,7 +1028,7 @@ A third path is *not* a viable EMPTY attack: a malicious slot-N+1 proposer alone
 
 **On the symmetric direction (forcing FULL when it should be EMPTY).** This requires a *PTC lie*, not just adversarial gossip. If the False-DA quorum reflects actual missing DA, attesters that do not have the payload locally vote EMPTY via `should_extend_payload`'s hard guard regardless of what the proposer declares. If the False-DA quorum is a PTC lie (honest attesters do have the payload locally), then a malicious proposer declaring FULL despite `should_build_on_full` is admitted by `on_block` and triggers fallback (c), yielding FULL. The reason this attack exists at all is that `should_build_on_full` is a constraint on honest proposers, not a protocol-enforced rule.
 
-> **The PTC's bidirectional authority (recap of §6).** A malicious proposer alone cannot force EMPTY: an honest PTC True/True quorum overrides it. A malicious PTC alone *can* force EMPTY via the False-DA path, because `should_build_on_full` strips the honest proposer's discretion. A False-timeliness quorum alone is not enough — it needs proposer collusion. Under **S3** (honest PTC majority), no False-quorum arises against an honestly delivered payload, so honest builders are protected (the setting of P2). Outside S3, the cost of treating the PTC's collective DA judgment as authoritative is the No-DA-collusion EMPTY attack.
+> **The PTC's bidirectional authority (recap of §6).** A malicious proposer alone cannot force EMPTY: an honest PTC True/True quorum overrides it. A malicious PTC alone *can* force EMPTY via the False-DA path, because `should_build_on_full` strips the honest proposer's discretion. A False-timeliness quorum alone is not enough — it needs proposer collusion. Under **S3** (honest PTC majority), no False-quorum arises against an honestly delivered payload, so honest builders are protected (the setting of P3). Outside S3, the cost of treating the PTC's collective DA judgment as authoritative is the No-DA-collusion EMPTY attack.
 
 **Damage is bounded** in both attack paths: the proposer is still paid via Path B in the trustless case, no honest validator is slashed, and the FULL branch persists structurally in the fork-choice tree. But the protocol does not automatically force re-selection of the FULL branch by subsequent honest proposers.
 
@@ -1054,11 +1056,11 @@ The two EMPTY-producing strategies enumerated above and the "Builder does NOT pa
 
 ## 9. From intuition to proof (WIP)
 
-> **TL;DR.** §9 is the formal-verification contract for this document. Every step in the proof of P1–P5 is a citation to either (i) a line of code shown in Phases 0–4 (§5, including the cautious-reveal protocols A1a/A1b in Phase 3), the Phase 5 + fork-choice machinery (§6), or the payment mechanism (§7), or (ii) one of the assumptions catalogued in §9.1–§9.2. Assumptions come in two categories: **structural** (S1–S3, network and adversary model) and **algorithmic** (G-prefix, what unseen spec helpers do). Some property claims add an additional per-instance hypothesis (e.g., "the slot-N+1 proposer is honest") that is not derivable from S1–S3; these are stated explicitly in the claim. The honest builder's cautious-reveal strategy is treated as a *protocol* defined in Phase 3 (A1a / A1b), not as a separate behavioural-assumption category.
+> **TL;DR.** §9 is the formal-verification contract for this document. Every step in the proof of P1–P6 is a citation to either (i) a line of code shown in Phases 0–4 (§5, including the cautious-reveal protocols A1a/A1b in Phase 3), the Phase 5 + fork-choice machinery (§6), or the payment mechanism (§7), or (ii) one of the assumptions catalogued in §9.1–§9.2. Assumptions come in two categories: **structural** (S1–S3, network and adversary model) and **algorithmic** (G-prefix, what unseen spec helpers do). Some property claims add an additional per-instance hypothesis (e.g., "the slot-N+1 proposer is honest") that is not derivable from S1–S3; these are stated explicitly in the claim. The honest builder's cautious-reveal strategy is treated as a *protocol* defined in Phase 3 (A1a / A1b), not as a separate behavioural-assumption category.
 >
 > *This section is work-in-progress and is the most likely part of the document to evolve.*
 
-**§9 is self-contained.** P1–P5 are not proved here from first principles; they are proved from the conjunction of:
+**§9 is self-contained.** P1–P6 are not proved here from first principles; they are proved from the conjunction of:
 
 - the handler code shown in §5 (Phases 0–4, including A1a/A1b protocols in Phase 3), the Phase 5 + fork-choice machinery shown in §6, and the payment mechanism shown in §7;
 - the structural and algorithmic assumptions catalogued in §9.1 and §9.2 respectively.
@@ -1094,13 +1096,13 @@ The PTC is a 512-position sample drawn from the slot's attestation committees by
 
 ### 9.2 Algorithmic assumptions
 
-*Each G-assumption pins down the behaviour of an internal spec function. Each is given as a pseudocode definition that captures the assumption's content for the purposes of proving the Category B and Category C properties (P3, P4, P5): pedagogical pseudocode rather than the full spec body. Category A (P1, P2) cites few or none of these; each proof sketch in §9.3 lists the assumptions it uses.*
+*Each G-assumption pins down the behaviour of an internal spec function. Each is given as a pseudocode definition that captures the assumption's content for the purposes of proving the Category B and Category C properties (P4, P5, P6): pedagogical pseudocode rather than the full spec body. Category A (P1, P2, P3) cites few or none of these; each proof sketch in §9.3 lists the assumptions it uses.*
 
 The remaining G-assumptions cover **payment + slashing machinery** (G-PayAttest, G-PayEpoch, G-Solvency, G-BidAdmit, G-Settle, G-Slashing). The fork-choice machinery (`get_node_children`, `get_weight`, `is_supporting_vote`, `on_block`'s parent-FULL assertion) is shown directly in §6 and is therefore not carried as a G-assumption here; proofs cite the §6 code by function name. Each subsection below lists the remaining assumption, its statement, and a collapsible pseudocode definition.
 
 **(G-PayAttest)** `process_attestation` increments `payment.weight` by `effective_balance(i)` exactly when (a) at least one new participation flag is set for validator `i`, (b) the attestation is same-slot, and (c) `payment.withdrawal.amount > 0`. No other code path modifies `payment.weight`.
 
-*Why an assumption:* The full body of `process_attestation` is not shown in this document; §7 displays only the new ePBS payment-weight step. The three preconditions and the "no other path mutates `payment.weight`" invariant are what P5's Part 3 (no double-charge) and P4's Case 1 (quorum unreachable) both cite.
+*Why an assumption:* The full body of `process_attestation` is not shown in this document; §7 displays only the new ePBS payment-weight step. The three preconditions and the "no other path mutates `payment.weight`" invariant are what P6's Part 3 (no double-charge) and P5's Case 1 (quorum unreachable) both cite.
 
 <details>
 <summary><b>Pseudocode definition</b> (click to expand)</summary>
@@ -1141,7 +1143,7 @@ def process_builder_pending_payments(state):
     # (G-PayEpoch) Iff `weight >= quorum`, the entry is queued for withdrawal.
     # Otherwise it is silently discarded during the epoch shift below: no
     # debit, no protocol-level penalty (this is the builder-protection
-    # mechanism that supports Property P4, trustless withholding protection).
+    # mechanism that supports Property P5, trustless withholding protection).
     for payment in state.builder_pending_payments[:SLOTS_PER_EPOCH]:
         if payment.weight >= quorum:
             state.builder_pending_withdrawals.append(payment.withdrawal)
@@ -1157,7 +1159,7 @@ def process_builder_pending_payments(state):
 
 **(G-Solvency)** `get_pending_balance_to_withdraw_for_builder(state, builder_index)` returns the sum of all amounts in `builder_pending_withdrawals` for that builder plus all `amount` fields in `builder_pending_payments` whose `builder_index` matches. No obligation type is omitted.
 
-*Why an assumption:* `get_pending_balance_to_withdraw_for_builder`'s body is not shown in this document. P5's solvency precondition cites this assumption.
+*Why an assumption:* `get_pending_balance_to_withdraw_for_builder`'s body is not shown in this document. P6's solvency precondition cites this assumption.
 
 <details>
 <summary><b>Pseudocode definition</b> (click to expand)</summary>
@@ -1183,14 +1185,14 @@ def get_pending_balance_to_withdraw_for_builder(state, builder_index):
 
     return total
     # This sum is what `can_builder_cover_bid` compares against the
-    # builder's stake when validating a new bid (the solvency precondition under P5).
+    # builder's stake when validating a new bid (the solvency precondition under P6).
 ```
 
 </details>
 
 **(G-BidAdmit) `process_execution_payload_bid` IOU creation.** `process_execution_payload_bid` accepts a bid only when (a) the bid signature is valid, (b) the builder is active, and (c) `can_builder_cover_bid(state, builder_index, bid.value)` returns True (the solvency precondition; cf. **G-Solvency**). When accepted, it caches the bid (`state.latest_execution_payload_bid = bid`) and (for non-self-build bids with `bid.value > 0`) creates exactly one `BuilderPendingPayment` IOU at index `SLOTS_PER_EPOCH + (slot % SLOTS_PER_EPOCH)` in `state.builder_pending_payments` (the *upper half* of the 2-epoch ring buffer; the lower half holds the previous epoch's entries facing the quorum check, cf. §7), with `withdrawal.amount = bid.value`, `withdrawal.builder_index = bid.builder_index`, and `weight = 0`. No IOU is created for `bid.value = 0` (self-build). (The `fee_recipient` equality and `is_gas_limit_target_compatible(parent_gas_limit, bid.gas_limit, target_gas_limit)` compatibility check against the proposer's preferences are gossip-layer obligations on the builder, enforced by `builder.md`'s broadcast rule and the `p2p-interface.md` topic validators, not by this function.) The full body of `process_execution_payload_bid` is shown in §5 Phase 1b; this assumption names the contract.
 
-*Why an assumption (special case):* The full body of `process_execution_payload_bid` *is* shown in §5 Phase 1b, but G-BidAdmit promotes its behaviour to a named formal contract so P5's proof can cite "**G-BidAdmit**" rather than "by inspection of Phase 1b line N". This is a citation convenience, not a hidden body.
+*Why an assumption (special case):* The full body of `process_execution_payload_bid` *is* shown in §5 Phase 1b, but G-BidAdmit promotes its behaviour to a named formal contract so P6's proof can cite "**G-BidAdmit**" rather than "by inspection of Phase 1b line N". This is a citation convenience, not a hidden body.
 
 <details>
 <summary><b>Pseudocode definition</b> (click to expand)</summary>
@@ -1216,7 +1218,7 @@ def process_execution_payload_bid(state, block):
             withdrawal=BuilderPendingWithdrawal(
                 amount=bid.value,
                 builder_index=bid.builder_index,
-                fee_recipient=bid.fee_recipient))     # P5 destination, set by spec at beacon-chain.md:1463
+                fee_recipient=bid.fee_recipient))     # P6 destination, set by spec at beacon-chain.md:1463
 
     state.latest_execution_payload_bid = bid
 ```
@@ -1225,7 +1227,7 @@ def process_execution_payload_bid(state, block):
 
 **(G-Settle) `apply_parent_execution_payload` payment settlement.** When a block at slot M declares `parentStatus = FULL` for its parent at slot N (i.e., `bid.parent_block_hash == state.latest_execution_payload_bid.block_hash`), `process_parent_execution_payload` runs `apply_parent_execution_payload`, which invokes `settle_builder_payment(state, payment_index)` (shown in §7). The `payment_index` is computed from N's slot: if N's epoch equals the current epoch, `payment_index = SLOTS_PER_EPOCH + (N % SLOTS_PER_EPOCH)` (upper half); if N's epoch equals the previous epoch, `payment_index = N % SLOTS_PER_EPOCH` (lower half); otherwise, the payment is appended directly to `state.builder_pending_withdrawals`. After settlement, the targeted `BuilderPendingPayment` entry is zeroed (`weight = 0`, `withdrawal.amount = 0`).
 
-*Why an assumption:* `settle_builder_payment`'s body is shown in §7, but its calling chain (`process_parent_execution_payload → apply_parent_execution_payload`, with the slot-index computation by epoch) is described only in prose. G-Settle names the chain and the index rule formally so P5's Path A step is a single citation.
+*Why an assumption:* `settle_builder_payment`'s body is shown in §7, but its calling chain (`process_parent_execution_payload → apply_parent_execution_payload`, with the slot-index computation by epoch) is described only in prose. G-Settle names the chain and the index rule formally so P6's Path A step is a single citation.
 
 <details>
 <summary><b>Pseudocode definition</b> (click to expand)</summary>
@@ -1260,7 +1262,7 @@ def apply_parent_execution_payload(state, requests):
 
 **(G-Slashing) `process_proposer_slashing` IOU clear.** When a valid `ProposerSlashing` for a proposer at slot N is processed on-chain within the 2-epoch `builder_pending_payments` window, the corresponding `BuilderPendingPayment` IOU is cleared: `weight = 0`, `withdrawal.amount = 0`. The cleared entry is therefore not queued by `process_builder_pending_payments` at the epoch boundary. This protects an honest builder that withheld in response to the slashing evidence (A1a condition (iii) failed).
 
-*Why an assumption:* `process_proposer_slashing`'s body is not shown in this document. P4's Case 2 cites this assumption to argue the IOU is cleared before the epoch-boundary quorum check runs.
+*Why an assumption:* `process_proposer_slashing`'s body is not shown in this document. P5's Case 2 cites this assumption to argue the IOU is cleared before the epoch-boundary quorum check runs.
 
 <details>
 <summary><b>Pseudocode definition</b> (click to expand)</summary>
@@ -1289,7 +1291,7 @@ def process_proposer_slashing(state, proposer_slashing):
 
 *Each sketch states the claim and presents a finite chain of citations into the assumptions of §9.1–§9.2, the cautious-reveal protocols A1a/A1b in §5 Phase 3, and the handler code shown in §5–§7.*
 
-The argument is valid **given** the stated assumptions. The sketches are ordered to match §4's categorisation: Category A (P1, P2; payment-trustlessness-independent), Category B (P3, P4; payment-trustlessness-dependent, each with two cases), Category C (P5; trustless-only).
+The argument is valid **given** the stated assumptions. The sketches are ordered to match §4's categorisation: Category A (P1, P2, P3; payment-trustlessness-independent), Category B (P4, P5; payment-trustlessness-dependent, each with two cases), Category C (P6; trustless-only).
 
 ---
 
@@ -1314,14 +1316,33 @@ Under these conditions, $B$ has $> 80\% W$ at slot $N+1$ and no competitor at sl
 
 ---
 
-**P2 (Data availability for chain inclusion) — Category A.**
+**P2 (Consensus progress is payload-independent) — Category A.**
+
+*Claim:* The canonical chain advances based on beacon-block timeliness alone, independent of whether the slot-$N$ execution payload is delivered.
+
+<details>
+<summary><b>Proof sketch</b> (click to expand)</summary>
+
+*Proof.* The claim has two parts: (i) the attest handler's payload-independence, and (ii) fork-choice's ability to advance through slots whose payloads are missing.
+
+*Part (i) — Phase 2 attest handler reads only the beacon block.* By inspection of the Phase 2 attest handler shown in §5 Phase 2: it computes `head = get_head(store)` and constructs an `AttestationData` containing `data.beacon_block_root = head.root`, `data.slot`, `data.target`, `data.source`, and `data.index ∈ {0, 1}`. None of these fields reference the execution payload. `get_head` is itself payload-aware only via the FULL/EMPTY status node selection (§6), but its inputs at this stage are beacon-block roots and PTC votes from prior slots — not the slot-$N$ payload. No call into `execution_engine`, no call into `verify_execution_payload_envelope`, and no read of `store.payloads[head.root]` occurs in the attest handler.
+
+*Part (ii) — fork-choice advances past missing payloads.* Suppose the builder for slot $N$ never reveals (`store.payloads[B.root]` is never populated at any honest node). By Part (i), honest slot-$N$ attesters still vote for $B$ at $T_{\mathrm{att}}$ if $B$ is the timely head. By the §6 fork-choice code, an honest slot-$N{+}1$ proposer's `get_head(store)` returns a descendant of $B$ (specifically, with `payload_status = EMPTY` for $B$, since the FULL child does not exist in $B$'s subtree absent `store.payloads[B.root]`; cf. §6 `get_node_children`). The slot-$N{+}1$ proposer then constructs a bid declaring `parentStatus = EMPTY` for $B$, and the resulting block is admitted by `on_block` (the parent-FULL admission assertion fires only when FULL is declared, not EMPTY; cf. §6 `on_block`). Hence slot $N{+}1$'s block extends the canonical chain regardless of $B$'s payload status.
+
+*Assumptions used:* none beyond the §5 Phase 2 attest handler code and the §6 fork-choice code (`get_head`, `get_node_children`, `on_block`'s parent-FULL admission rule). No structural assumption (S1, S2, S3) is needed: the property is a direct consequence of the spec's code structure — execution is off the critical path by construction.
+
+</details>
+
+---
+
+**P3 (Data availability for chain inclusion) — Category A.**
 
 *Claim:* Under **S2** (β < 20%, giving an honest super-majority of slot-$N{+}1$ attesters) and the per-instance hypothesis that the slot-$N{+}1$ proposer is honest: if a payload hash $h$ belongs to the payload hash chain of the canonical beacon chain (i.e., $h$ is on chain in the §3 sense), then the corresponding execution payload is available (some honest super-majority node has the `SignedExecutionPayloadEnvelope` with `block_hash == h` in `store.payloads`), valid (it passed `verify_execution_payload_envelope` at that node), and its associated blob data is available (passed `is_data_available`).
 
 <details>
 <summary><b>Proof sketch</b> (click to expand)</summary>
 
-*Proof.* Suppose $h$ is on chain at some honest node $v$. By the §3 equivalent characterization, there exist canonical blocks $B^*$ (with $B^*$'s `bid.block_hash` equal to $h$) and $C$, $B^*$'s child on $v$'s canonical chain, satisfying $C$'s `bid.parent_block_hash` equal to $h$. Since $C$ declares $\texttt{parentStatus}(B^*) = \mathrm{FULL}$, by the §6 `on_block` parent-FULL assertion $v$'s admission of $C$ required $B^*.\texttt{root} \in v.\texttt{store.payloads}$ at $C$'s admission time. Hence at every honest node that has $h$ on its payload-hash chain, the corresponding payload sits in `store.payloads`. Under **S2** (honest super-majority of slot-$N{+}1$ attesters) and the honest slot-$N{+}1$ proposer hypothesis, the honest super-majority admits $C$, witnessing the §4 P2 existential conclusion (some honest super-majority node holds the envelope).
+*Proof.* Suppose $h$ is on chain at some honest node $v$. By the §3 equivalent characterization, there exist canonical blocks $B^*$ (with $B^*$'s `bid.block_hash` equal to $h$) and $C$, $B^*$'s child on $v$'s canonical chain, satisfying $C$'s `bid.parent_block_hash` equal to $h$. Since $C$ declares $\texttt{parentStatus}(B^*) = \mathrm{FULL}$, by the §6 `on_block` parent-FULL assertion $v$'s admission of $C$ required $B^*.\texttt{root} \in v.\texttt{store.payloads}$ at $C$'s admission time. Hence at every honest node that has $h$ on its payload-hash chain, the corresponding payload sits in `store.payloads`. Under **S2** (honest super-majority of slot-$N{+}1$ attesters) and the honest slot-$N{+}1$ proposer hypothesis, the honest super-majority admits $C$, witnessing the §4 P3 existential conclusion (some honest super-majority node holds the envelope).
 
 The only path to populating $\texttt{store.payloads}[B^*.\texttt{root}]$ is `on_execution_payload_envelope` (§5 Phase 3), which requires (i) `is_data_available(envelope.beacon_block_root)` to pass (the blob data the node sampled arrived and passed KZG verification) and (ii) `verify_execution_payload_envelope` to pass (the payload was validated by the execution engine). Hence the payload with hash $h$ is *available* (it sits in `store.payloads`), *valid* (passed `verify_execution_payload_envelope`), and its blob data is *available* (passed `is_data_available`).
 
@@ -1329,15 +1350,15 @@ The only path to populating $\texttt{store.payloads}[B^*.\texttt{root}]$ is `on_
 
 *Assumptions used:* **S2** (giving honest slot-$N{+}1$ super-majority), per-instance honest slot-$N{+}1$ proposer hypothesis; plus §6 fork-choice code (`get_node_children`, `on_block` parent-FULL assertion). Honest-PTC behaviour (Phase 4 `ptc_vote` code) is consistent with this picture but the proof does not depend on it; the argument routes through `on_block` and `on_execution_payload_envelope`, not the PTC tiebreaker.
 
-*Remark on payment-field independence.* P2 makes no reference to which payment field the bid used. The argument routes through the on-chain `bid.parent_block_hash` declaration and `on_block`'s `is_payload_verified` assertion, both of which act on hashes only. So P2 holds identically in the trustless and non-trustless cases.
+*Remark on payment-field independence.* P3 makes no reference to which payment field the bid used. The argument routes through the on-chain `bid.parent_block_hash` declaration and `on_block`'s `is_payload_verified` assertion, both of which act on hashes only. So P3 holds identically in the trustless and non-trustless cases.
 
-*Remark on the bidirectional reading.* P2's forward direction is "hash on chain ⟹ payload + blob data available + valid" (proved above). The contrapositive is "either unavailable ⟹ hash not on chain", also useful as a direct chain-inclusion statement. The §3 hash-chain definition makes the two readings equivalent.
+*Remark on the bidirectional reading.* P3's forward direction is "hash on chain ⟹ payload + blob data available + valid" (proved above). The contrapositive is "either unavailable ⟹ hash not on chain", also useful as a direct chain-inclusion statement. The §3 hash-chain definition makes the two readings equivalent.
 
 </details>
 
 ---
 
-**P3 (Builder revealing protection) — Category B.**
+**P4 (Builder revealing protection) — Category B.**
 
 *Claim:* There exists a protocol an honest builder can follow such that, if the builder reveals its payload at slot $N$ (call the block $B$), then `bid(B).block_hash` is added to the payload hash chain of the canonical beacon chain. Two cases:
 
@@ -1370,7 +1391,7 @@ Both cases share the same proof structure: canonicity of $B$ (Part i), then the 
 
 *Assumptions used (non-trustless case):* **S1**, **S3** (honest slot-$N$ PTC majority only, no slot-$N{+}1$ proposer hypothesis), $\Sigma_R$ (from the chosen confirmation rule), **A1b**; plus the Phase 0 / 3 / 4 handler code and §6 fork-choice code.
 
-*Remark on the parametric form.* P3's non-trustless case is parametric in the confirmation rule $R$ the builder picks. Choosing FCR pulls in $\Sigma_{\mathrm{FCR}}$ (synchrony + a Byzantine bound + a quorum predicate). Choosing a more conservative rule pulls in stronger assumptions but slows confirmation down. So the non-trustless case gives up the protocol's enforcement and gets to pick its own assumption set in return.
+*Remark on the parametric form.* P4's non-trustless case is parametric in the confirmation rule $R$ the builder picks. Choosing FCR pulls in $\Sigma_{\mathrm{FCR}}$ (synchrony + a Byzantine bound + a quorum predicate). Choosing a more conservative rule pulls in stronger assumptions but slows confirmation down. So the non-trustless case gives up the protocol's enforcement and gets to pick its own assumption set in return.
 
 *Remark on the PTC-honesty requirement in the non-trustless case.* The FULL-declaration argument still requires honest PTC majority (S3); without it, the PTC tiebreaker can be flipped and the fork-choice may favour $(B, \mathrm{EMPTY})$. Whether $\Sigma_R$ already implies S3 depends on the rule (FCR's $\Sigma_{\mathrm{FCR}}$ does not, in general; it's about block-level canonicity, not PTC honesty). The cleanest statement keeps **S3** explicit. The slot-$N{+}1$ proposer's honesty, by contrast, is not needed.
 
@@ -1378,7 +1399,7 @@ Both cases share the same proof structure: canonicity of $B$ (Part i), then the 
 
 ---
 
-**P4 (Builder withholding protection) — Category B.**
+**P5 (Builder withholding protection) — Category B.**
 
 *Claim:* There exists a protocol an honest builder can follow such that, if the builder withholds its execution payload, the protocol does not charge it. Two cases:
 
@@ -1416,7 +1437,7 @@ In every case, the path to charging the builder either fails to reach quorum (Ca
 
 ---
 
-**P5 (Unconditional payment to the proposer) — Category C.**
+**P6 (Unconditional payment to the proposer) — Category C.**
 
 *Claim:* Let $B$ be a block at slot $N$ with `bid.value > 0` extending a block $B'$ at slot $N{-}1$. Assume **S1**, **S2**, and `parent_remains_canonical(B)` (the §4 strengthening hypothesis). If $B$ is proposed in a timely fashion, then within at most two epochs of slot $N$ the bid amount is **queued for transfer** to the proposer's `fee_recipient` as a `BuilderPendingWithdrawal` entry in `state.builder_pending_withdrawals`, and the payment is single (no double-charge). The execution-layer credit is then performed by `process_withdrawals` in a subsequent block. The case `bid.value = 0` is vacuously covered: by **G-BidAdmit**, no IOU is created, and no payment is owed.
 
@@ -1448,6 +1469,6 @@ In both cases the proposer receives a `BuilderPendingWithdrawal`.
 
 ## 10. What comes next
 
-This document makes externally observable claims organised in three categories (A: P1, P2 always-on; B: P3, P4 payment-trustlessness-dependent, each with two cases; C: P5 trustless-only), traces their enforcement, and surfaces every unresolved assumption. Each protocol-enforced property rests on at least one algorithmic assumption about an internal spec function (the G-prefix assumptions in §9.2). Several internal mechanisms (two-phase block processing, `store.payloads` gating the FULL node, same-slot payload-neutrality of the weight computation, witness-statement semantics of honest PTC voting, bid commitments being binding) are treated as *descriptions* in §3 and §5, not as Properties, because they are not directly verifiable from network messages alone.
+This document makes externally observable claims organised in three categories (A: P1, P2, P3 always-on; B: P4, P5 payment-trustlessness-dependent, each with two cases; C: P6 trustless-only), traces their enforcement, and surfaces every unresolved assumption. Each protocol-enforced property rests on at least one algorithmic assumption about an internal spec function (the G-prefix assumptions in §9.2). Several internal mechanisms (two-phase block processing, `store.payloads` gating the FULL node, same-slot payload-neutrality of the weight computation, witness-statement semantics of honest PTC voting, bid commitments being binding) are treated as *descriptions* in §3 and §5, not as Properties, because they are not directly verifiable from network messages alone.
 
-The companion formal treatment is being developed in a separate document. It rebuilds the model from definitions, gives full spec-grounded pseudocode for every helper and algorithm referenced above, and proves the G-assumptions as lemmas (with the cautious-reveal protocols A1a / A1b in §5 Phase 3 exhibited as non-normative recommendations rather than derived from the spec). It also derives the β < 20% per-committee bound from balance-weighted PTC sampling and the 60% = 40% + 20% quorum calibration, traces the proposer equivocation + boost attack, and discusses how P3's non-trustless case parametric assumption set $\Sigma_R$ specialises for concrete confirmation rules (FCR and others).
+The companion formal treatment is being developed in a separate document. It rebuilds the model from definitions, gives full spec-grounded pseudocode for every helper and algorithm referenced above, and proves the G-assumptions as lemmas (with the cautious-reveal protocols A1a / A1b in §5 Phase 3 exhibited as non-normative recommendations rather than derived from the spec). It also derives the β < 20% per-committee bound from balance-weighted PTC sampling and the 60% = 40% + 20% quorum calibration, traces the proposer equivocation + boost attack, and discusses how P4's non-trustless case parametric assumption set $\Sigma_R$ specialises for concrete confirmation rules (FCR and others).
