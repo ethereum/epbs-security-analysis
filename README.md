@@ -1,4 +1,4 @@
-![draft](https://img.shields.io/badge/status-🚧_WIP-orange?style=for-the-badge)
+d![draft](https://img.shields.io/badge/status-🚧_WIP-orange?style=for-the-badge)
 
 # ePBS: From Spec to Security Properties
 
@@ -267,7 +267,34 @@ Each property here has one conclusion with two cases — one when the builder us
 
 This category contains exactly one property: the unconditional-payment guarantee that defines the trustless case. There is no analogue in the non-trustless case: the protocol does not enforce `execution_payment` at all, so no on-chain mechanism can guarantee the proposer is paid.
 
-**P6: Unconditional payment to the proposer.** Given the same set of assumptions as **P1**, plus `bid.value > 0`. If $B$ is timely (Definition in §9.1: $t + \Delta \leq T_{\mathrm{att}}$), the protocol records an on-chain payment commitment to the proposer's `fee_recipient` within at most two epochs after $N$. The actual execution-layer credit follows via `apply_withdrawals` in a subsequent block. The builder cannot commit to a trustless bid and then avoid this on-chain commitment.
+**P6: Unconditional payment to the proposer.** Given the same set of assumptions as **P1**, plus `bid.value > 0`, and that all attestations cast by honest validators at slot $N$ on $B$ are included in the canonical chain before the start of epoch $e_N + 2$. Then the proposer's `fee_recipient` is eventually credited with the bid amount.
+
+<details>
+<summary><b>Why P6 only guarantees "eventually paid" — not a precise EL-credit slot</b> (click to expand)</summary>
+
+The protocol records an on-chain payment *commitment* — a `BuilderPendingWithdrawal` entry in `state.builder_pending_withdrawals` — within two epochs of slot $N$:
+
+- at slot $N{+}1$ via **Path A** (if a subsequent canonical block declares the slot FULL), or otherwise
+- at the first canonical block at slot $\geq$ start of epoch $e_N + 2$ via **Path B**, where `process_builder_pending_payments` runs at the epoch boundary and the 60% quorum is met (since the inclusion hypothesis + S2 + timely give `payment.weight` $>$ 80%).
+
+But this is only the commitment — **the EL credit** (the actual debit of the builder's CL balance and credit to the proposer's `fee_recipient` at the EL) happens later, via `process_withdrawals`, and its timing cannot be precisely bounded.
+
+**The withdrawal queue drains at a fixed rate per FULL block.** `get_expected_withdrawals` ([beacon-chain.md:1259-1297](consensus-specs/specs/gloas/beacon-chain.md#L1259-L1297)) drains from the front of `state.builder_pending_withdrawals` via `get_builder_withdrawals` ([beacon-chain.md:1184-1213](consensus-specs/specs/gloas/beacon-chain.md#L1184-L1213)), appending up to **`MAX_WITHDRAWALS_PER_PAYLOAD - 1 = 15`** entries to the EL payload's `withdrawals` field (one of the 16 payload-withdrawal slots is reserved for partial-withdrawals and the validator-sweep machinery). The EL credits each `fee_recipient` when it processes the payload.
+
+**So per FULL block, at most 15 builder-pending withdrawals are drained.**
+
+Two effects then make the EL-credit timing depend on chain state:
+
+- *Queue position matters.* If `state.builder_pending_withdrawals` already holds $K$ entries when a new `BuilderPendingWithdrawal` is appended, the new entry sits at position $K{+}1$ and is drained by the $\lceil (K{+}1) / 15 \rceil$-th subsequent FULL block.
+- *Only FULL blocks drain.* `process_withdrawals` ([beacon-chain.md:1372-1397](consensus-specs/specs/gloas/beacon-chain.md#L1372-L1397)) early-returns when the parent block declared EMPTY (no execution payload was applied). EMPTY-declaring blocks do not drain the queue.
+
+**Best case** (empty queue + every subsequent slot FULL): the proposer's `fee_recipient` is credited within a few slots of the on-chain commitment being recorded — typically at the very next FULL block.
+
+**Worst case** (deep queue from prior backlog): if a stretch of missed/EMPTY slots produced a backlog (each Path B settlement can enqueue up to 32 builder withdrawals at the epoch boundary, plus Path A entries from individual FULL declarations and any third-branch entries), the queue can hold thousands of entries. The container's hard cap is **`BUILDER_PENDING_WITHDRAWALS_LIMIT = 2^{20} = 1{,}048{,}576`** ([beacon-chain.md:180](consensus-specs/specs/gloas/beacon-chain.md#L180)) — at 15 builder withdrawals per FULL block, draining a queue of that size takes $\sim 70{,}000$ FULL blocks ($\approx 10$ days at standard 12-second slots).
+
+**Bottom line.** P6 bounds *when the chain commits to paying* (the on-chain commitment is recorded within ~2 epochs of slot $N$), not *when the proposer's `fee_recipient` actually receives the funds at the EL*. The latter is rate-limited by the 15-per-FULL-block cap and depends on how many other proposers are queued ahead of $B$'s proposer plus the FULL/EMPTY mix of subsequent slots. Under standard liveness with a healthy chain, the gap between commitment and EL credit is small (one to a handful of slots); under heavy backlog or extended periods of missed/EMPTY slots, the gap can be much larger.
+
+</details>
 
 The remainder of this section discusses the fee-recipient destination, the adversarial model the proofs rely on, and the strengthening hypothesis embedded in P1, P4 (trustless case), and P6.
 
@@ -1029,6 +1056,13 @@ The configuration that triggers it: all slots from $N{+}1$ to $M{-}1$ are missed
 
 **Why P5 (Builder withholding protection) is preserved.** The third branch is downstream of `apply_parent_execution_payload`, which itself is reached only via `process_parent_execution_payload` → `process_block` → `state_transition`. As described in §6, `state_transition` runs only after `on_block` admits the block. `on_block`'s parent-FULL assertion (`assert is_payload_verified(store, block.parent_root)`) rejects any FULL-declaring $C$ at every honest node where the parent's payload isn't locally verified. If the builder honestly withholds, no honest node has the payload, so the assertion fails everywhere honest, $C$ is rejected, `state_transition` never runs, the third branch is structurally unreachable. The only way the third branch can fire on the honest chain is if the builder actually revealed (so `on_block`'s gate passes at some honest node) — in which case charging the builder is the protocol's intent anyway.
 
+**How P6's "within two epochs" interacts with this corner.** The all-slots-missed configuration affects P6 differently depending on whether the builder revealed:
+
+- *Builder revealed + all slots $N{+}1$ to $M{-}1$ missed*: $C$ at slot $M$ declares FULL, `on_block`'s gate passes (payload locally verified at some honest nodes), the third branch fires and queues the payment. Timing is $M - N$ slots after $N$, which exceeds two epochs whenever $M \geq$ start-of-epoch$(e_N + 2)$. P6's "within two epochs" timing is **loosened** in this sub-case, but the payment is still recorded.
+- *Builder withheld + all slots $N{+}1$ to end-of-epoch-$e_N + 1$ missed*: no attestations on $B$ are ever included on chain, so `payment.weight` stays at 0 and Path B's quorum check fails when it eventually fires. No FULL declaration is admissible at honest nodes (the `on_block` gate), so the third branch cannot fire either. **No payment is recorded.** P6's unconditionality is **violated** in this sub-case — but the protocol's response is the only sound one given the information void: the chain cannot tell whether $B$ reached 60% honest weight at slot $N$, since no attestations were ever included.
+
+Both sub-cases require $\geq 32$ consecutive missed slots; under **S2**, the union-bound probability is $\leq 2\beta^{32} \approx 10^{-22}$. The §9.3 P6 statement reflects this by including the hypothesis that all honest slot-$N$ attestations on $B$ are included on chain before the start of epoch $e_N + 2$ — which fails in the second sub-case above.
+
 </details>
 
 **A note on the free option (trustless case).** *The same binding-bid mechanism that gives the proposer unconditional payment also gives the builder a short option.* Between bid commitment (`t = 0`, IOU recorded) and the PTC deadline (`t ≈ 9s`), the builder can observe new market information (e.g., centralized-exchange price moves) and choose whether to reveal. If the builder withholds and the beacon block meets the Path B quorum, the builder still pays `bid.value`: exercising the option is not free; its premium is the bid value. The non-trustless case has no such option because no exercise price exists: a non-trustless builder can withhold freely without protocol-side cost. This is a strategic concern, not a positive property, and is therefore not stated as one of P1–P6.
@@ -1465,7 +1499,7 @@ In every case, the path to charging the builder either fails to reach quorum (Ca
 
 **P6 (Unconditional payment to the proposer) — Category C.**
 
-*Claim:* Let $B$ be a block at slot $N$ with `bid.value > 0` extending a block $B'$ at slot $N{-}1$ and $B'$ will remain canonical forever. Assume **S1** (synchrony) and **S2** (β < 20%). If $B$ is timely ($t + \Delta \leq T_{\mathrm{att}}$; see §9.1 Definition), then within at most two epochs of slot $N$ the bid amount is **queued for transfer** to the proposer's `fee_recipient` as a `BuilderPendingWithdrawal` entry in `state.builder_pending_withdrawals`, and the payment is single (no double-charge). The execution-layer credit is then performed by `process_withdrawals` in a subsequent block. The case `bid.value = 0` is vacuously covered: by **G-BidAdmit**, no IOU is created, and no payment is owed.
+*Claim:* Let $B$ be a block at slot $N$ with `bid.value > 0` extending a block $B'$ at slot $N{-}1$ and $B'$ will remain canonical forever. Assume **S1** (synchrony), **S2** (β < 20%), and that all attestations cast by honest validators at slot $N$ on $B$ are included in the canonical chain before the start of epoch $e_N + 2$. If $B$ is timely ($t + \Delta \leq T_{\mathrm{att}}$; see §9.1 Definition), then the bid amount is **queued for transfer** to the proposer's `fee_recipient` as a `BuilderPendingWithdrawal` entry in `state.builder_pending_withdrawals` — either at slot $N{+}1$ via Path A or at the first canonical block at slot $\geq$ start of epoch $e_N + 2$ via Path B — and the payment is single (no double-charge). The case `bid.value = 0` is vacuously covered: by **G-BidAdmit**, no IOU is created, and no payment is owed.
 
 <details>
 <summary><b>Proof sketch</b> (click to expand)</summary>
@@ -1475,7 +1509,7 @@ In every case, the path to charging the builder either fails to reach quorum (Ca
 *Part 1 (settlement).* Two cases.
 
 - *Case 1a (Path A; FULL declared next slot).* A subsequent canonical block declares the slot FULL on chain (in the §3 sense). By **G-Settle**, `process_parent_execution_payload → apply_parent_execution_payload` runs and calls `settle_builder_payment` with the `payment_index` for slot $N$. The code of `settle_builder_payment` shown in §7 then appends a `BuilderPendingWithdrawal` (unconditional under `withdrawal.amount > 0`) and zeroes the IOU.
-- *Case 1b (Path B; quorum gate at epoch boundary).* No subsequent canonical block declares the slot FULL. By **P1** (Block safety), $B$ stays canonical, so the IOU created at $B$'s processing time persists in state. By the timeliness hypothesis ($t + \Delta \leq T_{\mathrm{att}}$; §9.1 Definition) combined with **S1** and the Phase 2 attest handler, every honest slot-$N$ attester casts a same-slot attestation for $B$ at $T_{\mathrm{att}}$; by **S2** the honest weight on $B$ is at least $(1-\beta) W > 0.8 W$. Under **S1** + **S2**, those attestations are included on the canonical chain before the end of epoch *e+1*: the spec's attestation inclusion window is bounded by `data.target.epoch in (previous, current)`, so any slot-$N$ attestation can be included up to end of epoch *e+1*, and at least one honest proposer in that window does so (β < 20% per balance-weighted committee leaves > 80% of the window's proposers honest). By **G-PayAttest**, each inclusion increments `payment.weight` by the attester's effective balance, accumulating to $\geq (1-\beta) W > 0.8 W \geq$ `get_builder_payment_quorum_threshold(state)`. By **G-PayEpoch**, `process_builder_pending_payments` appends a `BuilderPendingWithdrawal` at that epoch boundary.
+- *Case 1b (Path B; quorum gate at epoch boundary).* No subsequent canonical block declares the slot FULL. By **P1** (Block safety), $B$ stays canonical, so the IOU created at $B$'s processing time persists in state. By the timeliness hypothesis combined with **S1** and the Phase 2 attest handler, every honest slot-$N$ attester casts a same-slot attestation for $B$ at $T_{\mathrm{att}}$; by **S2** the honest weight on $B$ is at least $(1-\beta) W > 0.8 W$. By the inclusion hypothesis, all such attestations are included in the canonical chain before the start of epoch $e_N + 2$ (the spec's attestation inclusion window allows slot-$N$ attestations to be included up to the end of epoch $e_N + 1$). By **G-PayAttest**, each inclusion increments `payment.weight` by the attester's effective balance, accumulating to $\geq (1-\beta) W > 0.8 W \geq$ `get_builder_payment_quorum_threshold(state)`. The first canonical block processed at slot $\geq$ start of epoch $e_N + 2$ — which must exist for the inclusion hypothesis to hold (no attestations can be included after the chain stops advancing) — invokes `process_slots`, crossing the epoch-$e_N + 1$ boundary and running `process_epoch`, which calls `process_builder_pending_payments`. By **G-PayEpoch**, the quorum check passes and the `BuilderPendingWithdrawal` is appended at that point.
 
 In both cases the proposer receives a `BuilderPendingWithdrawal`.
 
@@ -1485,7 +1519,7 @@ In both cases the proposer receives a `BuilderPendingWithdrawal`.
 
 *Solvency precondition.* By **G-BidAdmit** condition (c) plus **G-Solvency**, the bid was admitted at slot $N$ only after `can_builder_cover_bid` verified the builder's balance covers all outstanding `value` obligations. (Note: `execution_payment` is not in this sum (cf. §3), so the solvency check is over the trustless field only.) Otherwise the admission assertion fails and no IOU exists.
 
-*Assumptions used:* **S1**, **S2**, **timeliness** ($t + \Delta \leq T_{\mathrm{att}}$; used via **P1**), **G-BidAdmit**, **G-Settle**, **G-PayAttest**, **G-PayEpoch**, **G-Solvency**. The configuration preconditions on $B$ ($B$ extends $B'$ at slot $N{-}1$, $B'$ remains canonical forever, `bid.value > 0`) feed canonicity into P1 and arm the IOU machinery.
+*Assumptions used:* **S1**, **S2**, **timeliness** ($t + \Delta \leq T_{\mathrm{att}}$; used via **P1**), the inclusion hypothesis (all honest slot-$N$ attestations on $B$ included on chain before start of epoch $e_N + 2$; used for Path B Case 1b only), **G-BidAdmit**, **G-Settle**, **G-PayAttest**, **G-PayEpoch**, **G-Solvency**. The configuration preconditions on $B$ ($B$ extends $B'$ at slot $N{-}1$, $B'$ remains canonical forever, `bid.value > 0`) feed canonicity into P1 and arm the IOU machinery.
 
 </details>
 
