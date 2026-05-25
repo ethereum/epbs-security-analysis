@@ -249,7 +249,7 @@ These hold regardless of which payment field the builder uses. They are pure con
 Let $B$ be a block proposed in slot $N$ and $P$ be the payload associated with $B$ (i.e. `bid(B).block_hash = hash(P)`).
 With the only possible exception of builders, the protocol does not require any other actor to complete the execution of $P$ before the start of slot $N+1$.
 
-**P3: Data availability for chain inclusion.** Assume **S2** (β < 20%, giving an honest super-majority of slot-$N{+}1$ attesters) and the per-instance hypothesis that the slot-$N{+}1$ proposer is honest. If a payload hash is in the payload hash chain of the canonical beacon chain (i.e., the hash is on chain in the §3 sense), then the corresponding execution payload is available and valid, and its associated blob data is also available.
+**P3: Data availability for chain inclusion.** Assume **S2** (β < 20%, giving an honest super-majority of slot-$N{+}1$ attesters). If a payload hash is in the payload hash chain of the canonical beacon chain (i.e., the hash is on chain in the §3 sense), then the corresponding execution payload is available and valid, and its associated blob data is also available.
 
 ### Category B — payment-trustlessness-dependent properties
 
