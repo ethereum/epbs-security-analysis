@@ -241,24 +241,24 @@ Each property is stated here informally and revisited precisely as we walk throu
 
 These hold regardless of which payment field the builder uses. They are pure consensus-layer properties: ePBS does not weaken what was already true about beacon-block canonicity, and the new two-phase model preserves data-availability guarantees for any payload that does land on chain.
 
-**P1: Block safety.** Let $B$ be a block proposed in slot $N$ extending a block $B'$ at slot $N{-}1$ and $B'$ will remain canonical forever. Assume **S1** (synchrony), **S2** (β < 20%). If $B$ includes a valid bid and is timely (Definition in §9.1: $t + \Delta \leq T_{\mathrm{att}}$), then $B$ remains in the canonical chain at every later time.
+**P1: Block safety.** Let $B$ be a block proposed in slot $N$ extending a block $B'$. Assume that $B'$'s slot is $N{-}1$, that $B'$ will remain canonical forever, **S1** (synchrony) and **S2** (β < 20%). If $B$ includes a valid bid and is timely (Definition in §9.1: $t + \Delta \leq T_{\mathrm{att}}$), then $B$ remains in the canonical chain at every later time.
 
 > **Why P1 is stated this way.** What we really want to claim is stronger: *ePBS does not introduce any new reorg attack against a timely block*. Proving that directly would require running the same execution on both pre-ePBS and ePBS and showing the canonical chains agree, which is too complex for this kind of document. So we prove P1 instead: under the same conditions that would have made $B$ canonical pre-ePBS (parent stays canonical, block is timely), $B$ is still canonical under ePBS. P1 is what we prove in place of the "no new reorg attacks" claim.
 
 **P2: Consensus progress is payload-independent.**
 Let $B$ be a block proposed in slot $N$ and $P$ be the payload associated with $B$ (i.e. `bid(B).block_hash = hash(P)`).
-With the only possible exception of builders, the protocol does not require any other actor to complete the execution of $P$ before the start of slot $N+1$.
+With the only possible exception of builders, the protocol does not require any other actor to complete the execution of $P$ before the beginning of slot $N+1$.
 
 **P3: Data availability for chain inclusion.** Assume **S2** (β < 20%, giving an honest super-majority of slot-$N{+}1$ attesters). If a payload hash is in the payload hash chain of the canonical beacon chain (i.e., the hash is on chain in the §3 sense), then the corresponding execution payload is available and valid, and its associated blob data is also available.
 
 ### Category B — payment-trustlessness-dependent properties
 
-Each property here has one conclusion with two possible assumptions — one when the builder uses trustless payment, one when the builder uses non-trustless payment. The builder follows a different *cautious-reveal protocol* in each case, shown as pseudocode in §5 Phase 3: the trustless protocol uses a 40%-real-weight check; the non-trustless protocol uses a confirmation rule $R$ with assumption set $\Sigma_R$.
+Each property here has one conclusion with two possible assumptions — one when the builder uses trustless payment, one when the builder uses non-trustless payment. The protocol that an honest builder can follow to guarantee these properties is detailed in §5 Phase 3.
 
 **P4: Builder revealing protection.** Under the assumptions listed below, there exists a protocol an honest builder can follow such that, if the builder decides to reveal payload $P$ in slot $N$, then `hash_tree_root(P)` is in the payload hash chain of the canonical beacon chain (equivalently, $B$ is FULL on chain; and by P3, the corresponding payload and blob data are available and valid).
 
 - *Trustless (`bid.value > 0`).* Assume there exists a beacon block at slot $N{-}1$ that remains canonical forever, **S1** (synchrony), **S2** (β < 20%), **S3** (slot-$N$ PTC majority is honest), and $B$ is timely (Definition in §9.1: $t + \Delta \leq T_{\mathrm{att}}$).
-- *Non-trustless (`bid.execution_payment > 0`, `bid.value = 0`).* Assume **S1** (synchrony), **S3** (slot-$N$ PTC majority is honest), and the rule-specific assumption set $\Sigma_R$ associated with the builder's confirmation rule $R$.
+- *Non-trustless (`bid.execution_payment > 0`, `bid.value = 0`).* Assume **S1** (synchrony), **S3** (slot-$N$ PTC majority is honest), the builder knows of a confirmation rule that relies on a set of assumptions that holds.
 
 **P5: Builder withholding protection.**  Under the assumptions listed below, there exists a protocol an honest builder can follow such that, if the builder withholds its execution payload, the protocol does not charge it.
 
