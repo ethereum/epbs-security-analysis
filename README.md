@@ -247,7 +247,7 @@ These hold regardless of which payment field the builder uses. They are pure con
 
 **P2: Consensus progress is payload-independent.** The canonical chain advances based on beacon-block timeliness alone, independent of whether the slot-$N$ execution payload is delivered.
 
-**P3: Data availability for chain inclusion.** Assume **S2** (β < 20%, giving an honest super-majority of slot-$N{+}1$ attesters) and the per-instance hypothesis that the slot-$N{+}1$ proposer is honest. If a payload hash is in the payload hash chain of the canonical beacon chain (i.e., the hash is on chain in the §3 sense), then the corresponding execution payload is available and valid, and its associated blob data is also available.
+**P3: Data availability for chain inclusion.** Assume **S2** (β < 20%, giving an honest super-majority). If a payload hash is in the payload hash chain of the canonical beacon chain (i.e., the hash is on chain in the §3 sense), then the corresponding execution payload is available and valid, and its associated blob data is also available.
 
 ### Category B — payment-trustlessness-dependent properties
 
@@ -260,8 +260,8 @@ Each property here has one conclusion with two cases — one when the builder us
 
 **P5: Builder withholding protection.** There exists a protocol an honest builder can follow such that, if the builder withholds its execution payload, the protocol does not charge it. Two cases:
 
-- *Trustless (`bid.value > 0`).* Assume **S1** (synchrony) and **S2** (β < 20%). 
-- *Non-trustless (`bid.execution_payment > 0`, `bid.value = 0`).* No assumptions needed. 
+- *Trustless (`bid.value > 0`).* Assume **S1** (synchrony) and **S2** (β < 20%).
+- *Non-trustless (`bid.execution_payment > 0`, `bid.value = 0`).* No assumptions needed.
 
 ### Category C — trustless-payment-only properties
 
@@ -273,7 +273,7 @@ The remainder of this section discusses the fee-recipient destination, the adver
 
 **Why the fee recipient and not the validator's balance.** *The bid is paid to the proposer's `fee_recipient` (an execution-layer address) rather than added to the validator's consensus-layer balance.* This follows the same convention used pre-ePBS for execution-layer fees: staking pools and similar operators rely on this separation because keeping consensus rewards apart from execution-layer revenue makes accounting and revenue distribution to delegators much simpler. Under ePBS, the only difference is *who* drives the credit (the builder, via `BuilderPendingWithdrawal`); the destination address remains the same. The same `fee_recipient` field is the destination for both `value` and `execution_payment`; the difference is only in *how* the payment lands there.
 
-**Adversarial model.** Three structural assumptions are catalogued in §9.1: network synchrony (**S1**, Δ < $T_{\mathrm{att}}$), a per-committee Byzantine bound of β < 20% (**S2**), and a PTC Byzantine bound < 50% (**S3**). Each property above lists the subset of {S1, S2, S3} it uses; not every property uses all three. P3 additionally names a per-instance honesty hypothesis ("the slot-$N{+}1$ proposer is honest") that is not derivable from S2 or S3 because the proposer is a single validator. P4's non-trustless case imports the rule-specific assumption set $\Sigma_R$ associated with the builder's confirmation rule.
+**Adversarial model.** Three structural assumptions are catalogued in §9.1: network synchrony (**S1**, Δ < $T_{\mathrm{att}}$), a per-committee Byzantine bound of β < 20% (**S2**), and a PTC Byzantine bound < 50% (**S3**). Each property above lists the subset of {S1, S2, S3} it uses; not every property uses all three. P4's non-trustless case imports the rule-specific assumption set $\Sigma_R$ associated with the builder's confirmation rule.
 
 <details>
 <summary><b>Why the strengthening precondition is needed for P1, P4 (trustless case), and P6</b> (click to expand)</summary>
@@ -926,17 +926,21 @@ def is_supporting_vote(store, (r, status), vote):
         return parent_status == status
 ```
 
-**`on_block` (the parent-FULL admission assertion).** When a block declares `parentStatus = FULL` for its parent (via `bid.parent_block_hash == state.latest_execution_payload_bid.block_hash`), `on_block` asserts `is_payload_verified(store, block.parent_root)`, i.e., `block.parent_root ∈ store.payloads`. If the assertion fails, the block is rejected. This is how the spec enforces the two-world model: a block cannot claim FULL ancestry without the parent's payload actually existing in the local store.
+**`on_block` (fork-choice's block-admission entry point).** `on_block` is the function each honest node runs whenever a new `SignedBeaconBlock` arrives via gossip. It is *the* gate between the network and the local view: a block becomes part of the node's chain only after `on_block` admits it. The structure is a sequence of admission checks, followed by `state_transition` (which applies the block to compute the post-state), followed by store updates. All admission checks run **before** `state_transition` — so a failed admission check prevents `state_transition` (and everything it triggers, including `process_block` → `process_parent_execution_payload`) from running at this node.
+
+The new-in-Gloas admission check is the **parent-FULL assertion**: when a block declares `parentStatus = FULL` for its parent (via `bid.parent_block_hash == state.latest_execution_payload_bid.block_hash`), `on_block` asserts `is_payload_verified(store, block.parent_root)`, i.e., `block.parent_root ∈ store.payloads`. If the assertion fails, the block is rejected. This is how the spec enforces the two-world model: a block cannot claim FULL ancestry without the parent's payload actually existing in the local store. Crucially, this check runs *before* `state_transition`.
 
 ```python
 def on_block(store, signed_block):
     block = signed_block.message
-    assert block.parent_root in store.block_states
-    if is_parent_node_full(store, block):                # parent declared FULL?
+    assert block.parent_root in store.block_states            # parent must be known
+    if is_parent_node_full(store, block):                     # block declares parent FULL?
         # Hard assertion: block rejected if parent's payload was never
-        # received or was invalid.
+        # received or was invalid at this node.
         assert is_payload_verified(store, block.parent_root)
-    # ... rest of on_block (state transition, store update) ...
+    # ... (other admission checks: slot sanity, finalized-descendant)
+    state_transition(state, signed_block, True)               # admission passed → apply block
+    # ... (store update: blocks, block_states, PTC vote arrays, proposer boost, ...)
 ```
 
 ---
@@ -1007,6 +1011,26 @@ def process_builder_pending_payments(state):
 
 > **Property P5: Builder withholding protection (trustless).** If the builder withholds and the beacon block does not reach the quorum, the builder is not charged. The 60% threshold + β < 20% calibration ensures Byzantine voters alone cannot drive the quorum over the threshold without honest participation.
 
+<details>
+<summary><b>Edge case: third-branch settlement (the "Path C" corner)</b> (click to expand)</summary>
+
+A third settlement path exists alongside Path A and Path B, hidden inside `apply_parent_execution_payload` ([beacon-chain.md:1141-1150](consensus-specs/specs/gloas/beacon-chain.md#L1141-L1150)):
+
+```python
+elif parent_bid.value > 0:
+    # Parent is older than the previous epoch, its payment entry has been
+    # evicted from builder_pending_payments. Append the withdrawal directly.
+    state.builder_pending_withdrawals.append(BuilderPendingWithdrawal(...))
+```
+
+This branch fires when a current block declares `parentStatus = FULL` for a parent $B$ that is **more than two epochs old**, AND **no intermediate canonical block exists between $B$ and the current block** (otherwise `state.latest_execution_payload_bid` would have been overwritten by some intermediate bid). It appends the `BuilderPendingWithdrawal` directly, **bypassing the 60% quorum check** that Path B normally enforces.
+
+The configuration that triggers it: all slots from $N{+}1$ to $M{-}1$ are missed, then a block $C$ at slot $M \geq$ start-of-epoch($e_N + 2$) declares FULL for $B$. With no intermediate blocks, no slot-$N$ attestations are ever included on chain, `payment.weight` stays at 0, Path B's quorum check at end of epoch $e_N + 1$ discards the IOU — and then the third branch resurrects the payment when $C$ arrives. This requires $\geq 32$ consecutive missed slots; under **S2**, probability $\leq \beta^{32} \approx 10^{-22}$.
+
+**Why P5 (Builder withholding protection) is preserved.** The third branch is downstream of `apply_parent_execution_payload`, which itself is reached only via `process_parent_execution_payload` → `process_block` → `state_transition`. As described in §6, `state_transition` runs only after `on_block` admits the block. `on_block`'s parent-FULL assertion (`assert is_payload_verified(store, block.parent_root)`) rejects any FULL-declaring $C$ at every honest node where the parent's payload isn't locally verified. If the builder honestly withholds, no honest node has the payload, so the assertion fails everywhere honest, $C$ is rejected, `state_transition` never runs, the third branch is structurally unreachable. The only way the third branch can fire on the honest chain is if the builder actually revealed (so `on_block`'s gate passes at some honest node) — in which case charging the builder is the protocol's intent anyway.
+
+</details>
+
 **A note on the free option (trustless case).** *The same binding-bid mechanism that gives the proposer unconditional payment also gives the builder a short option.* Between bid commitment (`t = 0`, IOU recorded) and the PTC deadline (`t ≈ 9s`), the builder can observe new market information (e.g., centralized-exchange price moves) and choose whether to reveal. If the builder withholds and the beacon block meets the Path B quorum, the builder still pays `bid.value`: exercising the option is not free; its premium is the bid value. The non-trustless case has no such option because no exercise price exists: a non-trustless builder can withhold freely without protocol-side cost. This is a strategic concern, not a positive property, and is therefore not stated as one of P1–P6.
 
 ---
@@ -1056,7 +1080,7 @@ The two EMPTY-producing strategies enumerated above and the "Builder does NOT pa
 
 ## 9. From intuition to proof (WIP)
 
-> **TL;DR.** §9 is the formal-verification contract for this document. Every step in the proof of P1–P6 is a citation to either (i) a line of code shown in Phases 0–4 (§5, including the cautious-reveal protocols A1a/A1b in Phase 3), the Phase 5 + fork-choice machinery (§6), or the payment mechanism (§7), or (ii) one of the assumptions catalogued in §9.1–§9.2. Assumptions come in two categories: **structural** (S1–S3, network and adversary model) and **algorithmic** (G-prefix, what unseen spec helpers do). Some property claims add an additional per-instance hypothesis (e.g., "the slot-N+1 proposer is honest") that is not derivable from S1–S3; these are stated explicitly in the claim. The honest builder's cautious-reveal strategy is treated as a *protocol* defined in Phase 3 (A1a / A1b), not as a separate behavioural-assumption category.
+> **TL;DR.** §9 is the formal-verification contract for this document. Every step in the proof of P1–P6 is a citation to either (i) a line of code shown in Phases 0–4 (§5, including the cautious-reveal protocols A1a/A1b in Phase 3), the Phase 5 + fork-choice machinery (§6), or the payment mechanism (§7), or (ii) one of the assumptions catalogued in §9.1–§9.2. Assumptions come in two categories: **structural** (S1–S3, network and adversary model) and **algorithmic** (G-prefix, what unseen spec helpers do). The honest builder's cautious-reveal strategy is treated as a *protocol* defined in Phase 3 (A1a / A1b), not as a separate behavioural-assumption category.
 >
 > *This section is work-in-progress and is the most likely part of the document to evolve.*
 
@@ -1065,7 +1089,7 @@ The two EMPTY-producing strategies enumerated above and the "Builder does NOT pa
 - the handler code shown in §5 (Phases 0–4, including A1a/A1b protocols in Phase 3), the Phase 5 + fork-choice machinery shown in §6, and the payment mechanism shown in §7;
 - the structural and algorithmic assumptions catalogued in §9.1 and §9.2 respectively.
 
-The proof of each property is a finite chain of citations into these two sources. A reader (or a verifier) can mechanically check that no step uses anything outside this contract. Some properties' claims add a per-instance hypothesis (e.g., "the slot-N+1 proposer is honest"); these are stated explicitly in the claim and do not require a separate assumption label, since they are not derivable from the global S1–S3.
+The proof of each property is a finite chain of citations into these two sources. A reader (or a verifier) can mechanically check that no step uses anything outside this contract.
 
 ---
 
@@ -1339,18 +1363,18 @@ Under these conditions, $B$ has $> 80\% W$ at slot $N+1$ and no competitor at sl
 
 **P3 (Data availability for chain inclusion) — Category A.**
 
-*Claim:* Under **S2** (β < 20%, giving an honest super-majority of slot-$N{+}1$ attesters) and the per-instance hypothesis that the slot-$N{+}1$ proposer is honest: if a payload hash $h$ belongs to the payload hash chain of the canonical beacon chain (i.e., $h$ is on chain in the §3 sense), then the corresponding execution payload is available (some honest super-majority node has the `SignedExecutionPayloadEnvelope` with `block_hash == h` in `store.payloads`), valid (it passed `verify_execution_payload_envelope` at that node), and its associated blob data is available (passed `is_data_available`).
+*Claim:* Under **S2** (β < 20%, giving an honest super-majority): if a payload hash $h$ belongs to the payload hash chain of the canonical beacon chain (i.e., $h$ is on chain in the §3 sense), then the corresponding execution payload is available (some honest super-majority node has the `SignedExecutionPayloadEnvelope` with `block_hash == h` in `store.payloads`), valid (it passed `verify_execution_payload_envelope` at that node), and its associated blob data is available (passed `is_data_available`).
 
 <details>
 <summary><b>Proof sketch</b> (click to expand)</summary>
 
-*Proof.* Suppose $h$ is on chain at some honest node $v$. By the §3 equivalent characterization, there exist canonical blocks $B^*$ (with $B^*$'s `bid.block_hash` equal to $h$) and $C$, $B^*$'s child on $v$'s canonical chain, satisfying $C$'s `bid.parent_block_hash` equal to $h$. Since $C$ declares $\texttt{parentStatus}(B^*) = \mathrm{FULL}$, by the §6 `on_block` parent-FULL assertion $v$'s admission of $C$ required $B^*.\texttt{root} \in v.\texttt{store.payloads}$ at $C$'s admission time. Hence at every honest node that has $h$ on its payload-hash chain, the corresponding payload sits in `store.payloads`. Under **S2** (honest super-majority of slot-$N{+}1$ attesters) and the honest slot-$N{+}1$ proposer hypothesis, the honest super-majority admits $C$, witnessing the §4 P3 existential conclusion (some honest super-majority node holds the envelope).
+*Proof.* Suppose $h$ is on chain. By the §3 equivalent characterization, there exist canonical blocks $B^*$ (with $B^*$'s `bid.block_hash` equal to $h$) and $C$, $B^*$'s canonical child, satisfying $C$'s `bid.parent_block_hash` equal to $h$ — equivalently, $C$ declares $\texttt{parentStatus}(B^*) = \mathrm{FULL}$. By **S2**, the canonical chain is the honest super-majority's chain, so there exists an honest super-majority node $v$ with $C$ in $v.\texttt{store.blocks}$. By the §6 `on_block` parent-FULL assertion, $v$'s admission of $C$ required $\texttt{is\_payload\_verified}(v.\texttt{store}, B^*.\texttt{root})$, i.e., $B^*.\texttt{root} \in v.\texttt{store.payloads}$, at $C$'s admission time. Hence $v$ — an honest super-majority node — holds the `SignedExecutionPayloadEnvelope` with `block_hash == h`, witnessing P3's existential conclusion. The identity of $C$'s proposer (slot-$N{+}1$'s or any later slot's, honest or Byzantine) does not enter the argument: only that $C$ ends up on the canonical chain — which the on-chain hypothesis forces — and that on_block's gate at every honest admitter then forces the payload to be locally verified there.
 
 The only path to populating $\texttt{store.payloads}[B^*.\texttt{root}]$ is `on_execution_payload_envelope` (§5 Phase 3), which requires (i) `is_data_available(envelope.beacon_block_root)` to pass (the blob data the node sampled arrived and passed KZG verification) and (ii) `verify_execution_payload_envelope` to pass (the payload was validated by the execution engine). Hence the payload with hash $h$ is *available* (it sits in `store.payloads`), *valid* (passed `verify_execution_payload_envelope`), and its blob data is *available* (passed `is_data_available`).
 
-*Contrapositive (unavailability ⟹ hash not on chain):* if either the payload or the sampled blob data is unavailable to the honest super-majority, then no honest super-majority node populates `store.payloads[B^*.root]`; by the §6 `get_node_children` code, the `(B^*, \mathrm{FULL})` node is absent from those nodes' fork-choice trees; the honest slot-$N{+}1$ proposer's `should_extend_payload(B^*)` fails at the `is_payload_verified` hard guard, and its bid declares EMPTY; a malicious slot-$N{+}1$ proposer could declare FULL nevertheless, but the §6 `on_block` parent-FULL assertion rejects that block at every honest super-majority node. So no canonical successor declares $B^*$ FULL, i.e., $h$ is not in the payload hash chain.
+*Contrapositive (unavailability ⟹ hash not on chain):* if either the payload or the sampled blob data is unavailable to the honest super-majority, then no honest super-majority node populates `store.payloads[B^*.root]`. Any block declaring `parentStatus = FULL` for $B^*$ — whether constructed honestly (in which case `should_extend_payload(B^*)` fails at the `is_payload_verified` hard guard so the honest proposer's bid declares EMPTY) or maliciously (declaring FULL anyway) — is either not constructed or rejected by `on_block`'s parent-FULL assertion at every honest super-majority node. So no canonical successor of $B^*$ declares FULL, i.e., $h$ is not in the payload hash chain.
 
-*Assumptions used:* **S2** (giving honest slot-$N{+}1$ super-majority), per-instance honest slot-$N{+}1$ proposer hypothesis; plus §6 fork-choice code (`get_node_children`, `on_block` parent-FULL assertion). Honest-PTC behaviour (Phase 4 `ptc_vote` code) is consistent with this picture but the proof does not depend on it; the argument routes through `on_block` and `on_execution_payload_envelope`, not the PTC tiebreaker.
+*Assumptions used:* **S2** (giving honest super-majority); plus §6 fork-choice code (`on_block` parent-FULL assertion) and §5 Phase 3 (`on_execution_payload_envelope` populating `store.payloads` only after `verify_execution_payload_envelope` and `is_data_available` both pass). Honest-PTC behaviour (Phase 4 `ptc_vote` code) is consistent with this picture but the proof does not depend on it; the argument routes through `on_block` and `on_execution_payload_envelope`, not the PTC tiebreaker.
 
 *Remark on payment-field independence.* P3 makes no reference to which payment field the bid used. The argument routes through the on-chain `bid.parent_block_hash` declaration and `on_block`'s `is_payload_verified` assertion, both of which act on hashes only. So P3 holds identically in the trustless and non-trustless cases.
 
