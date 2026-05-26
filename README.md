@@ -28,7 +28,7 @@ Every name below is a pedagogical helper, not a spec function. Each one abstract
 - **`aggregate_ptc_votes(slot - 1)`** — "The proposer MUST aggregate all payload attestations with the same data" (`validator.md`, §"Payload attestations").
 - **`construct_beacon_block(state, body)`** — Standard `BeaconBlock` container construction with `slot`, `proposer_index`, `parent_root`, `state_root`, `body`.
 - **`get_parent_execution_requests(store, state)`** — Three-case logic in `validator.md` §"Parent execution requests" with `head = get_head(store)`: empty `ExecutionRequests()` if the parent block is pre-Gloas; `store.payloads[head.root].execution_requests` if `should_build_on_full(store, head)` returns True; empty `ExecutionRequests()` otherwise.
-- **`is_head_of_chain(block, store)`** — Shorthand for `get_head(store).root == hash_tree_root(block)`, the "head of the builder's chain" check from `builder.md` §"Honest payload withheld messages".
+- **`is_head_of_chain(block, store)`** — Shorthand for `get_head(store).root == hash(block)`, the "head of the builder's chain" check from `builder.md` §"Honest payload withheld messages".
 - **`has_beacon_block_for_slot(store, slot)`, `get_beacon_block_root_for_slot(store, slot)`** — Inline checks in `validator.md` §"Constructing the `PayloadAttestationMessage`": the PTC member checks whether it has seen any beacon block for the assigned slot and obtains its hash tree root.
 - **`has_execution_payload_envelope(store, root)`** — Shorthand for "the node received a `SignedExecutionPayloadEnvelope` for `root` and stored it in `store.payloads` strictly before `get_payload_due_ms()` milliseconds into the slot" (spec: `validator.md` §"Constructing a payload attestation message"). When PTC vote time is reached, this is the predicate the honest PTC member evaluates to decide `data.payload_present`. Pre-#5212, this collapsed to plain `root in store.payloads`; post-#5212 the deadline is a separate constant (`PAYLOAD_DUE_BPS = 7500`, currently equal to the PTC-vote deadline but conceptually distinct).
 - **`check_blob_data(store, root)`** — The spec function is `is_data_available(beacon_block_root)` (`fork-choice.md`); we keep `store` in the signature so reads are visible at the call site.
@@ -38,7 +38,7 @@ Every name below is a pedagogical helper, not a spec function. Each one abstract
 
 *Math notation in §9 (proof sketches):*
 
-- **`slot(B)`, `parent(B)`, `state(B)`** — "the slot of block B", "the parent block of B", "the post-state of B"; i.e., `B.slot`, `store.blocks[B.parent_root]`, and `store.block_states[hash_tree_root(B)]` respectively.
+- **`slot(B)`, `parent(B)`, `state(B)`** — "the slot of block B", "the parent block of B", "the post-state of B"; i.e., `B.slot`, `store.blocks[B.parent_root]`, and `store.block_states[hash(B)]` respectively.
 - **`bid(B)`, `head(chain)`, `child(chain, B)`** — "the bid carried by block B", i.e., `B.body.signed_execution_payload_bid.message` (so `bid(B).block_hash`, `bid(B).parent_block_hash`, etc. are the corresponding fields of the `ExecutionPayloadBid` SSZ container). `head(chain)` is the head block of a canonical chain (the latest block in the sequence). `child(chain, B)` is B's unique canonical child on `chain` (the block whose `parent_root` equals B's hash-tree root); defined formally in §3.
 - **`block_status(chain, B)`, `parentStatus(B)`** — `block_status(chain, B)` is the FULL / EMPTY / undefined classifier defined in §3. `parentStatus(B)` is shorthand for "B's bid declares its parent as FULL or EMPTY": FULL if `bid(B).parent_block_hash == state.latest_execution_payload_bid.block_hash` at B's processing time, EMPTY otherwise. Used in §8 / §9 to refer to a block's *declared* view of its parent.
 - **`active_validators(store)`, `latest_message(v)`, `effective_balance(v)`, `child_blocks_of(blocks, r)`** — Pedagogical helpers in the §6 fork-choice machinery and §9 G-assumption sketches; abbreviate `get_active_validator_indices(state, get_current_epoch(state))`, `store.latest_messages[v]`, `state.validators[v].effective_balance`, and the children-of-`r` filter (over the filtered block tree `blocks`) that `get_node_children` (`fork-choice.md` line 555) applies, respectively.
@@ -247,9 +247,9 @@ These hold regardless of which payment field the builder uses. They are pure con
 
 > **Why P1 is stated this way.** What we really want to claim is stronger: *ePBS does not introduce any new reorg attack against a timely block*. Proving that directly would require running the same execution on both pre-ePBS and ePBS and showing the canonical chains agree, which is too complex for this kind of document. So we prove P1 instead: under the same conditions that would have made $B$ canonical pre-ePBS (parent stays canonical, block is timely), $B$ is still canonical under ePBS. P1 is what we prove in place of the "no new reorg attacks" claim.
 
-**P2: Consensus progress is payload-independent.**
+**P2: Payload execution deadline is the beginning of the next slot.**
 Let $B$ be a block proposed in slot $N$ and $P$ be the payload associated with $B$ (i.e. `bid(B).block_hash = hash(P)`).
-With the only possible exception of builders, the protocol does not require any other actor to complete the execution of $P$ before the beginning of slot $N+1$.
+With the only possible exception of builders, the protocol does not require any other honest actor to complete the execution of $P$ before the beginning of slot $N+1$.
 
 **P3: Data availability for chain inclusion.** Assume **S2** (β < 20%, giving an honest super-majority). If a payload hash is in the payload hash chain of the canonical beacon chain (i.e., the hash is on chain in the §3 sense), then the corresponding execution payload is available and valid, and its associated blob data is also available.
 
@@ -257,10 +257,10 @@ With the only possible exception of builders, the protocol does not require any 
 
 Each property here has one conclusion with two possible assumptions — one when the builder uses trustless payment, one when the builder uses non-trustless payment. The protocol that an honest builder can follow to guarantee these properties is detailed in §5 Phase 3.
 
-**P4: Builder revealing protection.** Under the assumptions listed below, there exists a protocol an honest builder can follow such that, if the builder decides to reveal payload $P$ in slot $N$, then `hash_tree_root(P)` is in the payload hash chain of the canonical beacon chain (equivalently, $B$ is FULL on chain; and by P3, the corresponding payload and blob data are available and valid).
+**P4: Builder revealing protection.** Under the assumptions listed below, there exists a protocol an honest builder can follow such that, if the builder decides to reveal payload $P$ in slot $N$, then `hash(P)` is in the payload hash chain of the canonical beacon chain (equivalently, $B$ is FULL on chain; and by P3, the corresponding payload and blob data are available and valid).
 
 - *Trustless (`bid.value > 0`).* Assume there exists a beacon block at slot $N{-}1$ that remains canonical forever, **S1** (synchrony), **S2** (β < 20%), **S3** (slot-$N$ PTC majority is honest), and $B$ is timely (Definition in §9.1: $t + \Delta \leq T_{\mathrm{att}}$).
-- *Non-trustless (`bid.execution_payment > 0`, `bid.value = 0`).* Assume **S1** (synchrony), **S3** (slot-$N$ PTC majority is honest), the builder knows of a confirmation rule that relies on a set of assumptions that holds.
+- *Non-trustless (`bid.execution_payment > 0`, `bid.value = 0`).* Assume **S1** (synchrony), **S3** (slot-$N$ PTC majority is honest), the builder knows of a confirmation rule that relies on a set of assumptions that hold.
 
 **P5: Builder withholding protection.**  Under the assumptions listed below, there exists a protocol an honest builder can follow such that, if the builder withholds its execution payload, the protocol does not charge it.
 
@@ -271,7 +271,7 @@ Each property here has one conclusion with two possible assumptions — one when
 
 This category contains exactly one property: the unconditional-payment guarantee that defines the trustless case. There is no analogue in the non-trustless case: the protocol does not enforce `execution_payment` at all, so no on-chain mechanism can guarantee the proposer is paid.
 
-**P6: Unconditional payment to the proposer.** Given the same set of assumptions as **P1**, plus `bid.value > 0` and the following two hypotheses on chain progression: (1) a canonical block at slot $\geq$ start of epoch $e_N+2$ exists; (2) all attestations cast by honest validators at slot $N$ on $B$ are included on the canonical chain before the start of epoch $e_N+2$. Then the proposer's `fee_recipient` is eventually credited with the bid amount.
+**P6: Unconditional payment to the proposer.** Given the same set of assumptions as **P1**, plus `bid.value > 0` and that all attestations cast by honest validators at slot $N$ are included on the canonical chain before the start of epoch $\mathsf{epoch}(N)+2$. The proposer's `fee_recipient` is eventually credited with the bid amount.
 
 P6 bounds *when the chain commits to paying* — a `BuilderPendingWithdrawal` is enqueued within at most two epochs of slot $N$ via the Path A / Path B mechanism (introduced in §3, detailed in §7). The actual **EL credit** — the moment the proposer's `fee_recipient` receives the funds at the execution layer — follows when a subsequent block's `apply_withdrawals` drains the queue, and its timing depends on chain state at settlement time. §7 includes a fold-out that works through the drain rate and the best- and worst-case settlement timing.
 
@@ -360,7 +360,7 @@ def submit_bid(builder, upcoming_slot, state, proposer_preferences):
         builder_index=builder.index,
         slot=upcoming_slot,
         parent_block_hash=state.latest_block_hash,
-        execution_requests_root=hash_tree_root(execution_requests),
+        execution_requests_root=hash(execution_requests),
         ...,
     )
     # Delivery: public gossip topic if execution_payment == 0; off-protocol channel otherwise (§3).
@@ -561,7 +561,7 @@ def reveal_payload(builder, block, store):
         payload=builder.stored_payload,                     # same payload object as in submit_bid
         execution_requests=builder.stored_requests,
         builder_index=builder.index,
-        beacon_block_root=hash_tree_root(block),
+        beacon_block_root=hash(block),
         parent_beacon_block_root=block.parent_root,
     )
     broadcast(SignedExecutionPayloadEnvelope(envelope, sign(envelope)))
