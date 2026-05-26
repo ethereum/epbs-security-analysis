@@ -148,6 +148,8 @@ We now define formally what it means for a block to be **FULL** or **EMPTY**.
 
 **Why the child alone determines the status.** Once $B$'s child $C$ declares EMPTY for $B$ (i.e., $C$'s `bid.parent_block_hash` does not equal $B$'s `bid.block_hash`), no later canonical block can declare FULL for $B$: `state.latest_block_hash` after $C$ no longer holds $B$'s `bid.block_hash`, and every subsequent block reads `state.latest_block_hash` to set its own `bid.parent_block_hash`. So the verdict is fixed by $C$ and cannot be revised by later blocks.
 
+**An equivalent form of EMPTY, and a useful invariant.** Let $C = $ `child(chain, B)`. Then $B$ is EMPTY on chain iff `bid(C).parent_block_hash` equals `bid(B).parent_block_hash` — that is, $C$ stamps the *same* execution-layer tip its parent stamped, because `state.latest_block_hash` did not advance across $B$. More generally, for any non-head canonical block $B$ on $\mathit{chain}$, `bid(B).parent_block_hash` equals the `block_hash` of the **most recent FULL ancestor** of $B$ on $\mathit{chain}$ (or genesis if none). A run of consecutive EMPTY blocks all stamp the same upstream FULL ancestor; the stamp updates only when an ancestor is FULL.
+
 Throughout this document, when we say "$B$ is FULL on chain" without qualification we mean `block_status(canonical, B) = FULL`, where `canonical` is the current canonical beacon chain.
 
 ### The payload hash chain
