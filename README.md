@@ -263,7 +263,7 @@ Three of these fields are the ones §3 has been using all along: `parent_block_h
 
 ## 4. Properties
 
-> **TL;DR.** Six externally observable properties P1–P6, organised in three categories. **Category A — payment-trustlessness-independent**: P1 (block safety), P2 (payload execution deadline is the beginning of the next slot), and P3 (data availability for chain inclusion); these hold regardless of which payment field the builder uses. **Category B — payment-trustlessness-dependent**: P4 (builder revealing protection) and P5 (builder withholding protection); each has a unified conclusion with two assumption-set cases, one per case. **Category C — trustless-payment-only**: P6 (unconditional payment), which has no analogue when `execution_payment` is used. All six are claims an observer with full visibility of network messages and on-chain state can verify, without inspecting any node's internal state.
+> **TL;DR.** Seven externally observable properties (P1–P6 plus P_valid), organised in three categories. **Category A — payment-trustlessness-independent**: P1 (block safety), P2 (payload execution deadline is the beginning of the next slot), P3 (data availability for chain inclusion), and P_valid (chain validity); these hold regardless of which payment field the builder uses. **Category B — payment-trustlessness-dependent**: P4 (builder revealing protection) and P5 (builder withholding protection); each has a unified conclusion with two assumption-set cases, one per case. **Category C — trustless-payment-only**: P6 (unconditional payment), which has no analogue when `execution_payment` is used. All seven are claims an observer with full visibility of network messages and on-chain state can verify, without inspecting any node's internal state.
 
 Each property is stated here informally and revisited precisely as we walk through the lifecycle. The two cases are introduced in §3 ("The bid container and its two payment fields"); we refer to them here as the *trustless case* (when `bid.value > 0`) and the *non-trustless case* (when `bid.execution_payment > 0` and `bid.value = 0`, delivered off-protocol).
 
@@ -280,6 +280,8 @@ Let $B$ be a block proposed in slot $N$ and $P$ be the payload associated with $
 With the only possible exception of builders, the protocol does not require any other honest actor to complete the execution of $P$ before the beginning of slot $N+1$.
 
 **P3: Data availability for chain inclusion.** Assume **S2** (β < 20%, giving an honest super-majority). If a payload hash is in the payload hash chain of the canonical beacon chain (i.e., the hash is on chain in the §3 sense), then the corresponding execution payload is available and valid, and its associated blob data is also available.
+
+**P_valid: Chain validity.** For every block $B$ on the canonical chain, $B$'s `bid.parent_block_hash` equals either `bid(parent(B)).block_hash` (declaring parent($B$) FULL) or `bid(parent(B)).parent_block_hash` (declaring parent($B$) EMPTY). Equivalently: a block's bid commits its execution parent to exactly one of the two hashes already on chain in its parent's bid; no third value is admissible.
 
 ### Category B — payment-trustlessness-dependent properties
 
@@ -322,7 +324,7 @@ The clause "**parent($B$) will remain canonical forever**", embedded in P1, P4 (
 
 </details>
 
-The remainder of this document shows how the protocol's algorithms enforce each of P1–P6. §5 Phase 3 presents the cautious-reveal protocols an honest builder can follow in each case. §8 walks through the adversarial scenarios in the trustless case. §9 (work-in-progress) provides the formal-verification contract: a self-contained set of assumptions that, combined with the code in §5–§7, suffices to prove the six properties.
+The remainder of this document shows how the protocol's algorithms enforce each of P1–P6 and P_valid. §5 Phase 3 presents the cautious-reveal protocols an honest builder can follow in each case. §8 walks through the adversarial scenarios in the trustless case. §9 (work-in-progress) provides the formal-verification contract: a self-contained set of assumptions that, combined with the code in §5–§7, suffices to prove the seven properties.
 
 ---
 
@@ -1121,7 +1123,7 @@ Both sub-cases require $\geq 32$ consecutive missed slots; under **S2**, the uni
 
 </details>
 
-**A note on the free option (trustless case).** *The same binding-bid mechanism that gives the proposer unconditional payment also gives the builder a short option.* Between bid commitment (`t = 0`, IOU recorded) and the PTC deadline (`t ≈ 9s`), the builder can observe new market information (e.g., centralized-exchange price moves) and choose whether to reveal. If the builder withholds and the beacon block meets the Path B quorum, the builder still pays `bid.value`: exercising the option is not free; its premium is the bid value. The non-trustless case has no such option because no exercise price exists: a non-trustless builder can withhold freely without protocol-side cost. This is a strategic concern, not a positive property, and is therefore not stated as one of P1–P6.
+**A note on the free option (trustless case).** *The same binding-bid mechanism that gives the proposer unconditional payment also gives the builder a short option.* Between bid commitment (`t = 0`, IOU recorded) and the PTC deadline (`t ≈ 9s`), the builder can observe new market information (e.g., centralized-exchange price moves) and choose whether to reveal. If the builder withholds and the beacon block meets the Path B quorum, the builder still pays `bid.value`: exercising the option is not free; its premium is the bid value. The non-trustless case has no such option because no exercise price exists: a non-trustless builder can withhold freely without protocol-side cost. This is a strategic concern, not a positive property, and is therefore not stated as one of P1–P6 / P_valid.
 
 ---
 
@@ -1170,11 +1172,11 @@ The two EMPTY-producing strategies enumerated above and the "Builder does NOT pa
 
 ## 9. From intuition to proof (WIP)
 
-> **TL;DR.** §9 is the formal-verification contract for this document. Every step in the proof of P1–P6 is a citation to either (i) a line of code shown in Phases 0–4 (§5, including the cautious-reveal protocols A1a/A1b in Phase 3), the Phase 5 + fork-choice machinery (§6), or the payment mechanism (§7), or (ii) one of the assumptions catalogued in §9.1–§9.2. Assumptions come in two categories: **structural** (S1–S3, network and adversary model) and **algorithmic** (G-prefix, what unseen spec helpers do). The honest builder's cautious-reveal strategy is treated as a *protocol* defined in Phase 3 (A1a / A1b), not as a separate behavioural-assumption category.
+> **TL;DR.** §9 is the formal-verification contract for this document. Every step in the proof of P1–P6 and P_valid is a citation to either (i) a line of code shown in Phases 0–4 (§5, including the cautious-reveal protocols A1a/A1b in Phase 3), the Phase 5 + fork-choice machinery (§6), or the payment mechanism (§7), or (ii) one of the assumptions catalogued in §9.1–§9.2. Assumptions come in two categories: **structural** (S1–S3, network and adversary model) and **algorithmic** (G-prefix, what unseen spec helpers do). The honest builder's cautious-reveal strategy is treated as a *protocol* defined in Phase 3 (A1a / A1b), not as a separate behavioural-assumption category.
 >
 > *This section is work-in-progress and is the most likely part of the document to evolve.*
 
-**§9 is self-contained.** P1–P6 are not proved here from first principles; they are proved from the conjunction of:
+**§9 is self-contained.** P1–P6 and P_valid are not proved here from first principles; they are proved from the conjunction of:
 
 - the handler code shown in §5 (Phases 0–4, including A1a/A1b protocols in Phase 3), the Phase 5 + fork-choice machinery shown in §6, and the payment mechanism shown in §7;
 - the structural and algorithmic assumptions catalogued in §9.1 and §9.2 respectively.
@@ -1490,6 +1492,21 @@ The only path to populating $\texttt{store.payloads}[B^*.\texttt{root}]$ is `on_
 
 ---
 
+**P_valid (Chain validity) — Category A.**
+
+*Claim:* For every block $B$ on the canonical chain, `bid(B).parent_block_hash ∈ {bid(parent(B)).block_hash, bid(parent(B)).parent_block_hash}`.
+
+<details>
+<summary><b>Proof sketch</b> (click to expand)</summary>
+
+*Proof.* Enforced by `process_execution_payload_bid` (§5 Phase 1b), which asserts `bid.parent_block_hash == state.latest_block_hash`. At $B$'s processing time, `state.latest_block_hash` takes exactly one of two values: `bid(parent(B)).block_hash` if `process_parent_execution_payload` applied parent($B$)'s payload effects (declaring parent($B$) FULL), or `bid(parent(B)).parent_block_hash` otherwise (declaring parent($B$) EMPTY). Any block whose `bid.parent_block_hash` differs from both values fails the assertion and is rejected at admission. Under **S2** (honest super-majority), rejected blocks cannot become canonical. See the §3.1 expansion box for the chain-layer vs. state-machine equivalence.
+
+*Assumptions used:* **S2**.
+
+</details>
+
+---
+
 **P4 (Builder revealing protection) — Category B.**
 
 *Claim:* There exists a protocol an honest builder can follow such that, if the builder reveals its payload at slot $N$ (call the block $B$), then `bid(B).block_hash` is added to the payload hash chain of the canonical beacon chain. Two cases:
@@ -1607,6 +1624,6 @@ In both cases the proposer receives a `BuilderPendingWithdrawal`.
 
 ## 10. What comes next
 
-This document makes externally observable claims organised in three categories (A: P1, P2, P3 always-on; B: P4, P5 payment-trustlessness-dependent, each with two cases; C: P6 trustless-only), traces their enforcement, and surfaces every unresolved assumption. Each protocol-enforced property rests on at least one algorithmic assumption about an internal spec function (the G-prefix assumptions in §9.2). Several internal mechanisms (two-phase block processing, `store.payloads` gating the FULL node, same-slot payload-neutrality of the weight computation, witness-statement semantics of honest PTC voting, bid commitments being binding) are treated as *descriptions* in §3 and §5, not as Properties, because they are not directly verifiable from network messages alone.
+This document makes externally observable claims organised in three categories (A: P1, P2, P3, P_valid always-on; B: P4, P5 payment-trustlessness-dependent, each with two cases; C: P6 trustless-only), traces their enforcement, and surfaces every unresolved assumption. Each protocol-enforced property rests on at least one algorithmic assumption about an internal spec function (the G-prefix assumptions in §9.2). Several internal mechanisms (two-phase block processing, `store.payloads` gating the FULL node, same-slot payload-neutrality of the weight computation, witness-statement semantics of honest PTC voting, bid commitments being binding) are treated as *descriptions* in §3 and §5, not as Properties, because they are not directly verifiable from network messages alone.
 
 The companion formal treatment is being developed in a separate document. It rebuilds the model from definitions, gives full spec-grounded pseudocode for every helper and algorithm referenced above, and proves the G-assumptions as lemmas (with the cautious-reveal protocols A1a / A1b in §5 Phase 3 exhibited as non-normative recommendations rather than derived from the spec). It also derives the β < 20% per-committee bound from balance-weighted PTC sampling and the 60% = 40% + 20% quorum calibration, traces the proposer equivocation + boost attack, and discusses how P4's non-trustless case parametric assumption set $\Sigma_R$ specialises for concrete confirmation rules (FCR and others).
