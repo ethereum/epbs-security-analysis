@@ -1330,6 +1330,52 @@ The PTC-negative EMPTY path and the "Builder does NOT pay" row of the payment ta
 
 The proof of each property is a finite chain of citations into these two sources. A reader (or a verifier) can mechanically check that no step uses anything outside this contract.
 
+<details>
+<summary><b>Key concepts for the proofs (click to expand)</b></summary>
+
+The proof sketches below reference concepts introduced across §1–§8. A condensed refresher, with section pointers:
+
+**Data model**
+
+- **state.** A `BeaconState` snapshot deterministically associated with a specific block, computed by applying `process_block` to the parent's state. Per-block, not per-node. (§5 intro)
+- **store.** Each node's local fork-choice state — what it has *observed*. Per-node, not deterministic. Includes `store.blocks`, `store.block_states`, `store.payloads`, `store.latest_messages`, `store.payload_timeliness_vote[r]`, `store.payload_data_availability_vote[r]`. (§5 intro)
+- **`store.payloads[root]`.** The local gate for FULL chain inclusion. Populated by `on_execution_payload_envelope` *only after* `is_data_available` AND `verify_execution_payload_envelope` both pass. (§5 Phase 3)
+
+**On-chain meaning of payload delivery**
+
+- **`bid.parent_block_hash` vs `bid.block_hash`.** A bid declares which execution chain tip its payload extends (`parent_block_hash`) and commits to the hash its payload will have (`block_hash`). (§3, §5 Phase 0)
+- **`parentStatus(B)`.** FULL if `bid(B).parent_block_hash == bid(parent(B)).block_hash`, EMPTY otherwise. The on-chain classifier read off the bid alone. (§3 *Block status*)
+- **Payload hash chain.** A payload hash $h$ is "on chain" iff some canonical bid commits to $h$ as `block_hash` AND some subsequent canonical bid references $h$ as its `parent_block_hash`. (§3)
+
+**Actors and the two-dimensional PTC vote**
+
+- **Attester vs PTC member.** Same validator may be both. Attesters vote at $T_{\mathrm{att}}$ on the head (`data.beacon_block_root`, `data.index ∈ {0, 1}`). PTC members vote at $T_{\mathrm{ptc}}$ on payload arrival. (§2)
+- **`payload_present`, `blob_data_available`.** The PTC's two binary signals on the slot's payload. Independent observations; both required for the PTC primary path. (§5 Phase 4)
+- **Four PTC quorum predicates.** `payload_timeliness(store, r, timely=True/False)` and `payload_data_availability(store, r, available=True/False)`. The True forms gate `should_extend_payload`'s primary path; the False forms gate `should_build_on_full`'s construction veto for an immediately previous-slot head. (§6)
+
+**Fork-choice rules**
+
+- **`should_extend_payload(store, r)`.** Tiebreaker every node consults inside `get_head` for the immediately previous slot's FULL/EMPTY decision. PTC primary path + three proposer-based fallbacks. (§6)
+- **`should_build_on_full(store, head)`.** Honest-construction rule consulted by the slot-N+1 proposer. For an immediately previous-slot FULL head, a negative PTC quorum on either signal forces the proposer to build EMPTY. **Not** an admission rule. (§6)
+- **`on_block` parent-FULL assertion.** Admission rule: a block declaring `parentStatus = FULL` is rejected by an honest node unless that node already has `store.payloads[parent_root]`. This is the structural gate; PTC votes do not override it. (§6)
+
+**Payment**
+
+- **`BuilderPendingPayment` (IOU).** Recorded at bid time when `bid.value > 0` by `process_execution_payload_bid` into `state.builder_pending_payments`. (§5 Phase 1b, §7)
+- **Path A / Path B / Path C.** Settlement paths: Path A fires when a successor declares the slot FULL; Path B fires when the slot's same-slot pending-payment weight reaches the 60% quorum at the epoch boundary; Path C is the rare missed-slot fallback in `apply_parent_execution_payload`. Path A clears Path B. (§7)
+- **The 60% quorum.** `get_builder_payment_quorum_threshold(state) = 0.6 · W` (per-slot active balance). Calibrated as `0.4 (cautious-reveal threshold) + 0.2 (Byzantine budget)`. (§7)
+
+**Honest-reveal strategies**
+
+- **A1a (trustless cautious-reveal).** Reveals when (i) the reveal window is open, (ii) ≥ 40% real attestation weight has been observed on the block, and (iii) no proposer equivocation is visible. Anchors canonicity via P_can. (§5 Phase 3)
+- **A1b (non-trustless cautious-reveal).** Reveals when (i) a confirmation rule $R$ returns `confirmed` for the block under $R$'s assumption set $\Sigma_R$, and (ii) reveal-timing safety. Anchors canonicity via $\Sigma_R$ directly. (§5 Phase 3)
+
+**Strengthening hypothesis used by P_can, P_rev (trustless), and P_pay**
+
+- **"$`B'`$ at slot $`N{-}1`$ will remain canonical forever."** Closes two reorg vectors that A1a's 40% threshold alone does not: (i) a Byzantine slot-$N$ proposer publishing $B$ late and split-voting honest attesters across two branches of $\mathrm{parent}(B)$; (ii) a colluding slot-$(N{-}1)$/slot-$N$ pair exploiting a missing slot $N{-}1$. (§4 *Adversarial model* fold-out)
+
+</details>
+
 ---
 
 ### 9.1 Structural assumptions
