@@ -4,6 +4,25 @@ This document contains the formal definitions, algorithms, and helper functions 
 
 **Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`e17a1389`](https://github.com/ethereum/consensus-specs/commit/e17a1389e6cee2f44e6b873e324ad4cb0172e341), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/e17a1389e6cee2f44e6b873e324ad4cb0172e341/specs/gloas). The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
 
+**Reading prerequisites.** This document is the formal layer of a two-part treatment. Conceptual framing — what ePBS is, who the actors are, what FULL/EMPTY means, why the seven properties are stated the way they are — lives in the companion [overview](https://github.com/ethereum/epbs-security-analysis/blob/master/README.md) on the `master` branch. Throughout this document, "overview §X" refers to a section of that file. A reader landing here cold should read the overview first; the table below maps the load-bearing concepts imported from it to the place they are formalised here.
+
+| Concept (overview) | Overview section | Formal locus here |
+|---|---|---|
+| Actor model (proposer, builder, attester, PTC member; validators vs. builders) | §2 | §1.2 honest-actor handlers |
+| Two-chain structure (consensus chain vs. execution chain) | §3 | §1.1 (Definition 4) and the "two-chain structure" subsection following Definition 13 |
+| Block status FULL / EMPTY / PENDING (chain-relative meaning) | §3 ("Block status: a property of (chain, block)") | Definitions 2, 4, 4b |
+| Payload hash chain | §3 ("The payload hash chain") | Definitions 4c, 4d |
+| Bid container and its two payment fields (`bid.value` trustless vs. `bid.execution_payment` non-trustless); the self-build branch | §3 ("The bid container and its two payment fields") | Definition 3b |
+| The seven externally observable properties (**P_can, P_exec, P_DA, P_valid, P_rev, P_withhold, P_pay**) and their categorisation (**Category A** payment-trustlessness-independent; **Category B** payment-trustlessness-dependent; **Category C** trustless-payment-only) | §4 | §1.4 property table |
+| Slot phases (Phase 0 build-up; Phase 1 propose; Phase 2 attest; Phase 3 reveal; Phase 4 PTC; Phase 5 next-slot fork-choice) | §5–§6 | Definition 1; §1.2 honest-actor handlers; Algorithms 1–9 |
+| Payment paths **Path A** (next-block FULL settlement), **Path B** (epoch-boundary quorum settlement), **Path C** (stale-cache fallback) | §7 | §1.4 "Payment mechanism properties" subsection; Helpers 12a, 12c, 14 |
+| Free option (the builder's strategic withhold/reveal choice between $`T_{\mathrm{att}}`$ and $`T_{\mathrm{ptc}}`$) | §7 (free-option remark) | §1.6 |
+| Adversarial summary (proposer-equivocation + boost; 20% Byzantine bound) | §8 | §1.4 "Adversarial properties" + "Adversarial model" subsections |
+| Named assumptions: **S1** (synchrony $`\Delta < T_{\mathrm{att}}`$), **S2** ($`\beta < 20\%`$), **S3** (honest PTC majority), **S4** (per-property honest-actor strengthenings); **A1a / A1b** (cautious reveal — trustless / non-trustless); **L_verify, L_successor, L_withdraw**; **I_payweight, I_slash**; **H7–H9** | §9.1–§9.2 | §1.4 "Discharging the overview's assumptions"; Assumptions H7 / H7b / H8 / H9 |
+| Confirmation rule $`R`$ and its assumption set $`\Sigma_R`$ (e.g., [Fast Confirmation Rule](https://fastconfirm.it)) | §4 (P_rev non-trustless), §9.2 (A1b) | Assumption H7b; Lemma 17b |
+
+A reader needing the motivation behind a definition should consult the overview section pointed to in the table; this document focuses on formal statements and proofs.
+
 ## 1. Fork Choice: Model, Definitions, and Algorithms
 
 This section formalizes the ePBS fork-choice rule. Ethereum's existing fork-choice function (LMD-GHOST, as part of the Gasper consensus protocol) selects the canonical chain by iteratively picking the child with the highest attestation weight. ePBS does not replace this mechanism — it extends it by making the *fork-choice node* — a `(root, payload_status)` pair — the primary abstraction. Multiple nodes can reference the same block, each carrying a different payload status (PENDING, FULL, EMPTY), which represents the two-phase block model. A new tiebreaker based on PTC votes, and a zero-return rule that delegates the immediately previous slot's payload-status decision to the tiebreaker, complete the extension. We first define the model (blocks, votes, nodes, the fork-choice tree), then present compact algorithms with numbered lines suitable for proving safety properties. Each definition and algorithm line is traceable to the spec ([`fork-choice.md`](https://github.com/ethereum/consensus-specs/blob/e17a1389e6cee2f44e6b873e324ad4cb0172e341/specs/gloas/fork-choice.md), [`beacon-chain.md`](https://github.com/ethereum/consensus-specs/blob/e17a1389e6cee2f44e6b873e324ad4cb0172e341/specs/gloas/beacon-chain.md)). Throughout this document, all unqualified spec-file mentions (e.g., *Spec reference: X in `fork-choice.md`*) refer to files in the [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/e17a1389e6cee2f44e6b873e324ad4cb0172e341/specs/gloas) folder.
@@ -3003,6 +3022,8 @@ A common scenario in ePBS analysis is a missed slot (no block proposed) followed
 *Remark.* This lemma is the foundation for Lemma 8 (attestation fallback for missed slots) and for the missed-slot fallback path in Lemma 11's Case 2 sub-case (a) ("builder withholds entirely" combined with subsequent missed slots, so that no `process_attestation` ever runs against the slot-N IOU). It also clarifies a subtle point in the attack analysis: at the start of slot N + 1, when an honest builder runs `get_head` to construct its bid, `proposer_boost_root` has been reset by `on_tick_per_slot` regardless of whether slot N + 1 will be missed. The reset happens at the slot boundary, before any block could arrive.
 
 ### 1.6 Free Option Analysis
+
+This section formalises the **free option** — the builder's strategic withhold/reveal choice during the interval between the bid commitment (`t_commit`) and the payload-arrival deadline (`t_payload_due`) — and the spec-level mechanisms that bound it. The conceptual framing and economic motivation appear in overview §7 ("free option" remark). The definitions and lemmas below give the formal version: who knows what at each instant, what the builder can decide, and what the protocol charges them for the decision.
 
 *Pedagogical notation.* In the definitions below, we write `slot_start(N)` as a shorthand for `compute_time_at_slot(state, N)` — the wall-clock start time of slot N, equivalently `state.genesis_time + N * SECONDS_PER_SLOT`. `slot_start` is not a Gloas spec function; we use it for narrative clarity in the timing definitions.
 
