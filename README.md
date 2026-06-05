@@ -154,6 +154,64 @@ The actual `ExecutionPayload` SSZ container (transactions, state root, withdrawa
 
 **This shapes what we can formally guarantee.** Anything the protocol can promise about payloads from on-chain inspection alone (validity, availability, blob-data availability) must be expressible in terms of these hashes, because hashes are all the canonical chain stores. Payload-level claims are downstream of hash-level claims, and the most we can claim at the hash level is *which hashes appear in which bid fields on the canonical chain*.
 
+### What the payload hash commits to
+
+The builder reveals a `SignedExecutionPayloadEnvelope`: a signed wrapper around the `ExecutionPayload` plus the companion `ExecutionRequests` and delivery metadata. The `ExecutionPayload` is the execution block being revealed: transactions, withdrawals, execution roots, gas fields, timing fields, and the carried `block_hash`. That `block_hash` is an execution-layer block-header hash, not an SSZ root of the `ExecutionPayload` container. At reveal time, `verify_execution_payload_envelope` first checks the carried field against the bid:
+
+```python
+assert payload.block_hash == bid.block_hash
+```
+
+The execution engine then checks that `payload.block_hash` is correctly computed from the execution header. Schematically:
+
+```text
+payload.block_hash == keccak256(rlp(execution_header))
+```
+
+For the Gloas payload shape, the header is built from the execution-payload fields and the envelope inputs that the execution layer treats as header commitments:
+
+- `payload.parent_hash`, the execution parent hash. This is the same execution tip that the bid exposes as `bid.parent_block_hash`.
+- `payload.fee_recipient`, `payload.state_root`, `payload.receipts_root`, `payload.logs_bloom`, `payload.prev_randao`, `payload.block_number`, `payload.gas_limit`, `payload.gas_used`, `payload.timestamp`, `payload.extra_data`, and `payload.base_fee_per_gas`.
+- the post-Merge constants for `ommers_hash`, `difficulty`, and `nonce`.
+- the transaction trie root computed from `payload.transactions`. The transaction list itself is not a header field; the header commits to its trie root.
+- the EL withdrawals root computed from `payload.withdrawals`.
+- `payload.blob_gas_used` and `payload.excess_blob_gas`.
+- the block-access-list hash computed from the RLP-encoded `payload.block_access_list`.
+- `payload.slot_number`.
+- `envelope.parent_beacon_block_root`.
+- `requests_hash(get_execution_requests_list(envelope.execution_requests))`, the execution-layer commitment to the request data carried beside the payload.
+
+The fields above are spread across the Gloas `ExecutionPayload`, `ExecutionPayloadEnvelope`, and `ExecutionPayloadBid` containers in [`beacon-chain.md`](consensus-specs/specs/gloas/beacon-chain.md), while `ExecutionRequests` and `get_execution_requests_list` are defined in the Electra execution-request machinery in [`beacon-chain.md`](consensus-specs/specs/electra/beacon-chain.md).
+
+The carried field `payload.block_hash` is not itself an input to that hash. Nor are the bid signature, envelope signature, `builder_index`, PTC votes, or blob sidecars direct header fields. Blob data is represented indirectly: blob transactions commit to versioned blob hashes, the bid mirrors the KZG commitments in `bid.blob_kzg_commitments`, and the blob sidecars are checked by the data-availability machinery rather than by being inserted directly into the execution header.
+
+This gives three distinct checks that are easy to conflate:
+
+```text
+hash-consistency:  does the received payload actually hash to bid.block_hash?
+request binding:   do the revealed ExecutionRequests match bid.execution_requests_root?
+execution validity: if the EL executes the payload, do the claimed roots/effects match?
+```
+
+`verify_execution_payload_envelope` performs the request-binding check with:
+
+```python
+assert hash_tree_root(envelope.execution_requests) == bid.execution_requests_root
+```
+
+and then delegates hash-consistency and execution validity to `execution_engine.verify_and_notify_new_payload(...)`.
+
+**`ExecutionPayload` versus `ExecutionRequests`.** `ExecutionRequests` is the separate request object returned with the payload by the execution engine and carried beside it in the `ExecutionPayloadEnvelope`. In the current spec it contains the Electra request lists:
+
+```python
+class ExecutionRequests(Container):
+    deposits: List[DepositRequest, MAX_DEPOSIT_REQUESTS_PER_PAYLOAD]
+    withdrawals: List[WithdrawalRequest, MAX_WITHDRAWAL_REQUESTS_PER_PAYLOAD]
+    consolidations: List[ConsolidationRequest, MAX_CONSOLIDATION_REQUESTS_PER_PAYLOAD]
+```
+
+These requests are not transactions. They are execution-layer-originated requests that the consensus layer later processes if the parent payload is accepted as FULL. The slot-N bid commits to them by `bid.execution_requests_root`; the slot-N envelope reveals them; and a FULL-declaring successor carries them as `parent_execution_requests`, where `process_parent_execution_payload` checks the same root before applying them.
+
 ### Block status: a property of (chain, block)
 
 We now define formally what it means for a block to be **FULL** or **EMPTY**.
