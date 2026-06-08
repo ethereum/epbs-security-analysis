@@ -367,7 +367,7 @@ The remainder of this section discusses the fee-recipient destination, the adver
 
 **Why the fee recipient and not the validator's balance.** *The bid is paid to the proposer's `fee_recipient` (an execution-layer address) rather than added to the validator's consensus-layer balance.* This follows the same convention used pre-ePBS for execution-layer fees: staking pools and similar operators rely on this separation because keeping consensus rewards apart from execution-layer revenue makes accounting and revenue distribution to delegators much simpler. Under ePBS, the only difference is *who* drives the credit (the builder, via `BuilderPendingWithdrawal`); the destination address remains the same. The same `fee_recipient` field is the destination for both `value` and `execution_payment`; the difference is only in *how* the payment lands there.
 
-**Adversarial model.** Three structural assumptions are catalogued in §9.1: network synchrony (**S1**, Δ < $`T_{\mathrm{att}}`$), a per-slot online-participation / adversarial-weight bound against the spec denominator $W$ (**S2**), and a PTC honest-online majority bound (**S3**). Each property above lists the subset of {S1, S2, S3} it uses; not every property uses all three. P_rev's non-trustless case imports the rule-specific assumption set $\Sigma_R$ associated with the builder's confirmation rule.
+**Adversarial model.** Four structural assumptions are catalogued in §9.1: network synchrony for honest messages (**S1**, Δ < $`T_{\mathrm{att}}`$), a per-slot online-participation / adversarial-weight bound against the spec denominator $W$ (**S2**), a PTC honest-online majority bound (**S3**), and an adversarial-delivery network model (**S4**, the companion to S1 for the adversary's own messages). Each property above lists the subset of {S1, S2, S3} it uses; not every property uses all three. **S4** bounds adversarial message delivery and is used by the §8 adversarial analysis rather than the property proofs. P_rev's non-trustless case imports the rule-specific assumption set $\Sigma_R$ associated with the builder's confirmation rule.
 
 <details>
 <summary><b>Why the strengthening precondition is needed for P_can, P_rev (trustless case), and P_pay</b> (click to expand)</summary>
@@ -1377,7 +1377,7 @@ The PTC-negative EMPTY path and the "Builder does NOT pay" row of the payment ta
 
 ## 9. From intuition to proof (WIP)
 
-> **TL;DR.** §9 catalogues every assumption needed to justify the §4 properties and gives proof sketches that route through them. Every step in those proofs is a citation to either (i) a line of code shown in Phases 0–4 (§5, including the cautious-reveal protocols A1a/A1b in Phase 3), the Phase 5 + fork-choice machinery (§6), or the payment mechanism (§7), or (ii) one of the assumptions catalogued in §9.1–§9.2. Assumptions come in two categories: **structural** (S1–S3, network and adversary model) and **algorithmic** (G-prefix, what unseen spec helpers do). The honest builder's cautious-reveal strategy is treated as a *protocol* defined in Phase 3 (A1a / A1b), not as a separate behavioural-assumption category.
+> **TL;DR.** §9 catalogues every assumption needed to justify the §4 properties and gives proof sketches that route through them. Every step in those proofs is a citation to either (i) a line of code shown in Phases 0–4 (§5, including the cautious-reveal protocols A1a/A1b in Phase 3), the Phase 5 + fork-choice machinery (§6), or the payment mechanism (§7), or (ii) one of the assumptions catalogued in §9.1–§9.2. Assumptions come in two categories: **structural** (S1–S4, network and adversary model) and **algorithmic** (G-prefix, what unseen spec helpers do). The honest builder's cautious-reveal strategy is treated as a *protocol* defined in Phase 3 (A1a / A1b), not as a separate behavioural-assumption category.
 >
 > *This section is work-in-progress and is the most likely part of the document to evolve.*
 
@@ -1438,7 +1438,7 @@ The proof sketches below reference concepts introduced across §1–§8. A conde
 
 ### 9.1 Structural assumptions
 
-*S1–S3 fix the network and adversary model.*
+*S1–S4 fix the network and adversary model.*
 
 **(S1) Network synchrony.** The synchrony delay $\Delta$ satisfies $\Delta < T_{\mathrm{att}}$. Equivalently: every message broadcast by an honest actor before time $t$ is delivered to every honest actor by time $t + \Delta$. In particular, honest attestations cast at $T_{\mathrm{att}}$ propagate to every honest node before the PTC deadline $T_{\mathrm{ptc}}$.
 
@@ -1466,6 +1466,10 @@ The PTC is a 512-position sample drawn from the slot's attestation committees by
 PTC gossip validation and `on_payload_attestation_message` both tie each payload attestation to a block at the message's own `data.slot`, so the sampled committee's vote is about the assigned slot's beacon block; if the slot has no block, the Phase 4 handler has no inherited-head vote to cast.
 
 </details>
+
+**(S4) Adversarial delivery.** For messages under Byzantine control, such as a Byzantine builder's payload or a Byzantine proposer's block, the adversary may choose whether to release the message, when to release it, and how broadly it propagates before each deadline.
+
+*Why an assumption:* This models adversarial control over the marginal fraction of honest nodes that receive the message by a given time, allowing partial propagation. Unless stated otherwise, it does not give the adversary role-targeted delivery control: the adversary cannot force independently chosen first-arrival views for the PTC sample, the next proposer, and the attester population.
 
 **Proof-specific inclusion/liveness side conditions.** These are not additional spec rules; they are external liveness assumptions used only by the named properties below.
 
