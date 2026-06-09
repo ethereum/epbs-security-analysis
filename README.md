@@ -36,12 +36,12 @@ Every name below is a pedagogical helper, not a spec function. Each one abstract
 - **`update_participation_flags(state, i, data)`** — Abstracts the inline flag-update loop in `process_attestation` (`beacon-chain.md:1734–1751`): for each participation flag set by this attestation that validator `i` has not yet set, set the flag on `epoch_participation[i]` and accumulate the proposer reward. Returns `True` iff at least one new flag was set. Used inside the §9.2 G-PayAttest pseudocode body.
 - **`deliver_bid_to_proposer(signed_bid)`** — Pedagogical wrapper for the two delivery channels of §3: `broadcast` on the public `execution_payload_bid` gossip topic when `signed_bid.message.execution_payment == 0`, or off-protocol transport otherwise (cf. p2p-interface.md gossip `REJECT` rule). Replaces the unqualified `broadcast` in the Phase 0 `submit_bid` code; either channel results in the same `SignedExecutionPayloadBid` reaching the proposer.
 
-*Math notation in §9 (proof sketches):*
+*Math notation in §9 (proofs):*
 
 - **`slot(B)`, `parent(B)`, `state(B)`** — "the slot of block B", "the parent block of B", "the post-state of B"; i.e., `B.slot`, `store.blocks[B.parent_root]`, and `store.block_states[hash_tree_root(B)]` respectively.
 - **`bid(B)`, `head(chain)`, `child(chain, B)`** — "the bid carried by block B", i.e., `B.body.signed_execution_payload_bid.message` (so `bid(B).block_hash`, `bid(B).parent_block_hash`, etc. are the corresponding fields of the `ExecutionPayloadBid` SSZ container). `head(chain)` is the head block of a canonical chain (the latest block in the sequence). `child(chain, B)` is B's unique canonical child on `chain` (the block whose `parent_root` equals B's hash-tree root); defined formally in §3.
 - **`block_status(chain, B)`, `parentStatus(B)`** — `block_status(chain, B)` is the FULL / EMPTY / undefined classifier defined in §3. `parentStatus(B)` is shorthand for "B's bid declares its parent as FULL or EMPTY": FULL if `bid(B).parent_block_hash == bid(parent(B)).block_hash`, EMPTY otherwise. Used in §8 / §9 to refer to a block's *declared* view of its parent.
-- **`active_validators(store)`, `latest_message(v)`, `effective_balance(v)`, `child_blocks_of(blocks, r)`** — Pedagogical helpers in the §6 fork-choice machinery and §9 G-assumption sketches; abbreviate `get_active_validator_indices(state, get_current_epoch(state))`, `store.latest_messages[v]`, `state.validators[v].effective_balance`, and the children-of-`r` filter (over the filtered block tree `blocks`) that `get_node_children` (`fork-choice.md` line 554) applies, respectively.
+- **`active_validators(store)`, `latest_message(v)`, `effective_balance(v)`, `child_blocks_of(blocks, r)`** — Pedagogical helpers in the §6 fork-choice machinery and §9 G-assumption definitions; abbreviate `get_active_validator_indices(state, get_current_epoch(state))`, `store.latest_messages[v]`, `state.validators[v].effective_balance`, and the children-of-`r` filter (over the filtered block tree `blocks`) that `get_node_children` (`fork-choice.md` line 554) applies, respectively.
 - **`epoch(N)`** — The epoch containing slot $N$, equal to `compute_epoch_at_slot(N) = N // SLOTS_PER_EPOCH`. We write $`\mathsf{epoch}(N)`$ in math notation and `epoch(N)` in prose. Some earlier drafts of this document used the shorthand $e_N$ for the same quantity; we no longer do.
 - **"$`B'`$ will remain canonical forever"** — The strengthening canonicity precondition embedded in P_can, P_rev (trustless case), and P_pay's statements (§4), where $`B'`$ is the canonical block at slot $`N{-}1`$. Rules out a configuration where a Byzantine slot-$`N`$ proposer publishes $`B`$ late and fragments honest votes between $`B`$'s branch and a competing branch under an older common ancestor, causing parent($`B`$) to lose canonicity. The companion missing-slot configuration (a colluding slot-$`N{-}1`$ / slot-$`N`$ Byzantine pair exploiting a missing intervening slot) is excluded automatically: $`B'`$'s existence at slot $`N{-}1`$ leaves no missing slot to exploit. The fact that $`B`$ extends $`B'`$ is derived from the other hypotheses in each property (automatic for an honest proposer in P_can/P_pay; derived from A1a (ii) plus $`B'`$'s canonicity in P_rev trustless). P_rev's non-trustless case substitutes the confirmation rule's $`\Sigma_R`$ (§5 Phase 3 A1b) for this hypothesis. Not a spec function; see §4 for full motivation and open work to weaken it.
 
@@ -329,7 +329,7 @@ Each property is stated here informally and revisited precisely as we walk throu
 
 These hold regardless of which payment field the builder uses. They are pure consensus-layer properties: ePBS does not weaken what was already true about beacon-block canonicity, and the new two-phase model preserves data-availability guarantees for any payload that does land on chain.
 
-**P_can: Block safety.** Let $`B`$ be a block proposed in slot $`N`$ by an **honest proposer**, extending a block $`B'`$. Assume that $`B'`$'s slot is $`N{-}1`$, that $`B'`$ will remain canonical forever, **S1** (synchrony) and **S2** (β < 20%). If $`B`$ includes a valid bid, then $`B`$ remains in the canonical chain at every later time.
+**P_can: Block safety.** Let $`B`$ be a block proposed in slot $`N`$ by an **honest proposer**, extending a block $`B'`$. Assume that $`B'`$'s slot is $`N{-}1`$, that $`B'`$ will remain canonical forever, **S1** (synchrony), **S2** (β < 20%), and — only when $`B`$ declares its parent $`B'`$ FULL — **L_parent** (every online honest node locally verifies $`B'`$'s execution payload before $`T_{\mathrm{att}}`$, and `on_block` re-evaluates a block first rejected by its parent-FULL assertion once that payload is locally verified; §9.1). If $`B`$ includes a valid bid, then $`B`$ remains in the canonical chain at every later time.
 
 > **Why P_can is stated this way.** What we really want to claim is stronger: *ePBS does not introduce any new reorg attack against a block proposed by an honest proposer*. Proving that directly would require running the same execution on both pre-ePBS and ePBS and showing the canonical chains agree, which is too complex for this kind of document. So we prove P_can instead: under the same conditions that would have made $`B`$ canonical pre-ePBS (parent stays canonical, proposer is honest), $`B`$ is still canonical under ePBS. P_can is what we prove in place of the "no new reorg attacks" claim. *Note: an honest slot-$`N`$ proposer (a) broadcasts $`B`$ at slot start (hence timely in the §9.1 sense, $`t + \Delta \leq T_{\mathrm{att}}`$) and (b) does not equivocate (publishes a single block at slot $`N`$).*
 
@@ -367,7 +367,7 @@ The remainder of this section discusses the fee-recipient destination, the adver
 
 **Why the fee recipient and not the validator's balance.** *The bid is paid to the proposer's `fee_recipient` (an execution-layer address) rather than added to the validator's consensus-layer balance.* This follows the same convention used pre-ePBS for execution-layer fees: staking pools and similar operators rely on this separation because keeping consensus rewards apart from execution-layer revenue makes accounting and revenue distribution to delegators much simpler. Under ePBS, the only difference is *who* drives the credit (the builder, via `BuilderPendingWithdrawal`); the destination address remains the same. The same `fee_recipient` field is the destination for both `value` and `execution_payment`; the difference is only in *how* the payment lands there.
 
-**Adversarial model.** Four structural assumptions are catalogued in §9.1: network synchrony for honest messages (**S1**, Δ < $`T_{\mathrm{att}}`$), a per-slot online-participation / adversarial-weight bound against the spec denominator $W$ (**S2**), a PTC honest-online majority bound (**S3**), and an adversarial-delivery network model (**S4**, the companion to S1 for the adversary's own messages). Each property above lists the subset of {S1, S2, S3} it uses; not every property uses all three. **S4** bounds adversarial message delivery and is used by the §8 adversarial analysis rather than the property proofs. P_rev's non-trustless case imports the rule-specific assumption set $\Sigma_R$ associated with the builder's confirmation rule.
+**Adversarial model.** Four structural assumptions are catalogued in §9.1: network synchrony with honest relay (**S1**, Δ < $`T_{\mathrm{att}}`$; honest nodes relay any gossip-valid message), a per-slot online-participation / adversarial-weight bound against the spec denominator $W$ (**S2**), a PTC honest-online majority bound (**S3**), and an adversarial-delivery network model (**S4**, the companion to S1 for the adversary's own messages). **S1, S2, S3 are *enabling* assumptions:** each property's statement lists exactly the subset its proof uses, and not every property uses all three (P_exec uses none; P_DA and P_valid use only S2). The list is therefore informative — it tells the reader how much network and participation strength each guarantee actually costs — so these are stated per-property, not assumed globally. **S4 is a *restrictive* bound on the adversary**, in force globally for the adversarial analysis (§8) and never a per-property premise: a restrictive assumption only ever shrinks the attack surface, so it is not something a positive proof "uses." P_rev's non-trustless case imports the rule-specific assumption set $\Sigma_R$ associated with the builder's confirmation rule.
 
 <details>
 <summary><b>Why the strengthening precondition is needed for P_can, P_rev (trustless case), and P_pay</b> (click to expand)</summary>
@@ -382,7 +382,7 @@ The clause "**$`B'`$ will remain canonical forever**", embedded in P_can, P_rev 
 
 </details>
 
-The remainder of this document shows how the protocol's algorithms enforce each of these properties. §5 Phase 3 presents the cautious-reveal protocols an honest builder can follow in each case. §8 walks through the adversarial scenarios in the trustless case. §9 (work-in-progress) catalogues a self-contained set of assumptions and gives proof sketches that, combined with the code in §5–§7, justify the properties above.
+The remainder of this document shows how the protocol's algorithms enforce each of these properties. §5 Phase 3 presents the cautious-reveal protocols an honest builder can follow in each case. §8 walks through the adversarial scenarios in the trustless case. §9 (work-in-progress) catalogues a self-contained set of assumptions and gives proofs that, combined with the code in §5–§7, justify the properties above.
 
 ---
 
@@ -1378,7 +1378,7 @@ The PTC-negative EMPTY path and the "Builder does NOT pay" row of the payment ta
 
 ## 9. From intuition to proof (WIP)
 
-> **TL;DR.** §9 catalogues every assumption needed to justify the §4 properties and gives proof sketches that route through them. Every step in those proofs is a citation to either (i) a line of code shown in Phases 0–4 (§5, including the cautious-reveal protocols A1a/A1b in Phase 3), the Phase 5 + fork-choice machinery (§6), or the payment mechanism (§7), or (ii) one of the assumptions catalogued in §9.1–§9.2. Assumptions come in two categories: **structural** (S1–S4, network and adversary model) and **algorithmic** (G-prefix, what unseen spec helpers do). The honest builder's cautious-reveal strategy is treated as a *protocol* defined in Phase 3 (A1a / A1b), not as a separate behavioural-assumption category.
+> **TL;DR.** §9 catalogues every assumption needed to justify the §4 properties and gives proofs that route through them. Every step in those proofs is a citation to either (i) a line of code shown in Phases 0–4 (§5, including the cautious-reveal protocols A1a/A1b in Phase 3), the Phase 5 + fork-choice machinery (§6), or the payment mechanism (§7), or (ii) one of the assumptions catalogued in §9.1–§9.2. Assumptions come in two categories: **structural** (S1–S4, network and adversary model) and **algorithmic** (G-prefix, what unseen spec helpers do). The honest builder's cautious-reveal strategy is treated as a *protocol* defined in Phase 3 (A1a / A1b), not as a separate behavioural-assumption category.
 >
 > *This section is work-in-progress and is the most likely part of the document to evolve.*
 
@@ -1392,7 +1392,7 @@ The proof of each property is a finite chain of citations into these two sources
 <details>
 <summary><b>Key concepts for the proofs (click to expand)</b></summary>
 
-The proof sketches below reference concepts introduced across §1–§8. A condensed refresher, with section pointers:
+The proofs below reference concepts introduced across §1–§8. A condensed refresher, with section pointers:
 
 **Data model**
 
@@ -1441,9 +1441,13 @@ The proof sketches below reference concepts introduced across §1–§8. A conde
 
 *S1–S4 fix the network and adversary model.*
 
-**(S1) Network synchrony.** The synchrony delay $\Delta$ satisfies $\Delta < T_{\mathrm{att}}$. Equivalently: every message broadcast by an honest actor before time $t$ is delivered to every honest actor by time $t + \Delta$. In particular, honest attestations cast at $T_{\mathrm{att}}$ propagate to every honest node before the PTC deadline $T_{\mathrm{ptc}}$.
+**(S1) Network synchrony (with honest relay).** The synchrony delay $\Delta$ satisfies $\Delta < T_{\mathrm{att}}$. Equivalently: every message that has been **received and gossip-validated by some honest actor** by time $t$ is delivered to every honest actor by time $t + \Delta$.
 
-*Why an assumption:* Synchrony is a property of the network, not of any spec function; no protocol code can enforce a delivery-delay bound. External model.
+*Remarks (commentary on S1, not part of the assumption).* This is the faithful abstraction of libp2p gossipsub — honest nodes relay any message that passes a topic's `[REJECT]`/`[IGNORE]` validation, regardless of who originated it — and it **subsumes** the weaker honest-origination guarantee that every message an honest actor *originates* is delivered to all honest actors within $\Delta$ (an honest actor's own broadcast is, trivially, a message it has received and validated at send time). Two consequences the proofs use: honest attestations cast at $T_{\mathrm{att}}$ reach every honest node before the PTC deadline $T_{\mathrm{ptc}}$; and a valid `SignedExecutionPayloadEnvelope` held by *any one* honest node reaches every honest node within $\Delta$, even if a Byzantine builder originated it and delivered it to that node alone.
+
+*Scope — delivery, not verification; and the S4 interaction.* S1 bounds *delivery* of message bytes only. It does **not** bound the per-node *local processing* that some checks gate on: populating `store.payloads[root]` requires the receiving node to complete `is_data_available` + `verify_execution_payload_envelope` *after* delivery, and that completion is a separate per-node liveness (see **L_verify**, **L_parent**), not supplied by S1. S1 governs a message once it is held by an honest node; **S4** governs the adversary's *own* delivery of a message not yet held by any honest node (the adversary picks the initial marginal fraction, role-obliviously). The two are coherent: for any gossip-valid message, the moment one honest node holds it, S1's relay collapses S4's fraction to *all* honest nodes within $\Delta$ — so a sustained honest-visible split is only possible for objects that are *not* relayed gossip messages (e.g. the per-node `store.payloads` map) or before any honest node holds the message.
+
+*Why an assumption:* Synchrony and honest relay are properties of the network and the gossipsub deployment, not of any spec function; no protocol code can enforce a delivery-delay bound. gossipsub is best-effort, so S1 is the post-GST synchrony idealization the analyses assume. External model.
 
 **Definition (timely block).** A beacon block at slot $`N`$ is **timely** iff it is broadcast at a time $`t`$ satisfying $`t + \Delta \leq T_{\mathrm{att}}`$. By **S1**, every online honest validator receives a timely block before $`T_{\mathrm{att}}`$, hence before casting its slot-$`N`$ attestation. A non-timely block (broadcast at $`t > T_{\mathrm{att}} - \Delta`$) is delivered only partially to online honest validators by $`T_{\mathrm{att}}`$: some receive it in time and vote for it, others do not and vote for the previous head. This split visibility is what enables the late-block reorg vector against blocks that fall outside this definition; P_can and P_pay condition their conclusions on $`B`$ being timely in this sense.
 
@@ -1474,18 +1478,21 @@ PTC gossip validation and `on_payload_attestation_message` both tie each payload
 
 **Proof-specific inclusion/liveness side conditions.** These are not additional spec rules; they are external liveness assumptions used only by the named properties below.
 
+*Listed in order of first use across the §9.3 proofs.*
+
+- **(L_parent) P_can parent-payload admission.** In P_can, *when the slot-$`N`$ block $`B`$ declares its parent $`B'`$ FULL* (i.e., `bid(B).parent_block_hash = bid(B').block_hash`), every online honest node completes local verification of $`B'`$'s execution payload — `is_data_available` and `verify_execution_payload_envelope`, populating `store.payloads[B'.root]` — before $`T_{\mathrm{att}}`$; and `on_block` re-evaluates a block first rejected by its parent-FULL assertion (`is_payload_verified(block.parent_root)`, fork-choice.md:924–925) once that payload becomes locally verified. This is needed because a FULL-declaring $`B`$ is *rejected* at `on_block` by any honest node lacking $`B'`$'s payload, so without uniform local verification (plus the admission retry) the honest slot-$`N`$ vote can split off $`B`$ and reorg it. **Vacuous when $`B`$ declares its parent EMPTY** (no parent-FULL assertion fires). **S1** supplies envelope *delivery* (and, under honest gossip relay, propagation from the proposer — which must locally hold $`B'`$'s payload to declare FULL); **L_parent** supplies the local DA/EL *completion* and the admission *retry* that delivery alone does not. This is the P_can-analogue of **L_verify**, applied to the parent payload before the slot-$`N`$ vote rather than to $`B`$'s payload before the successor decision.
+- **(L_verify) Payload-processing liveness.** In P_rev, after an honest builder reveals a valid payload and blob sidecars within A1a/A1b's reveal-time-safety window, online honest PTC members complete the local payload/blob observations needed for their True/True Phase 4 vote before the PTC deadline. Also, the honest nodes needed for the first canonical successor decision complete `on_execution_payload_envelope` for the parent block before that successor is proposed or voted on. The latter includes both `is_data_available` and `verify_execution_payload_envelope`, so `store.payloads[B.root]` is populated in time. **S1** supplies network delivery; **L_verify** supplies the local payload/DA/EL processing bound.
+- **(L_successor) P_rev successor liveness.** In P_rev, after honest fork choice favours the FULL child of $B$, canonical block production continues long enough for some proposer following that fork-choice decision to publish a canonical successor that declares $B$ FULL. This is the usual chain-liveness / honest-proposer-schedule condition needed to turn a fork-choice preference into an on-chain child; without any subsequent canonical block, $B$ has no retrospective FULL/EMPTY status.
 - **(I_payweight) P_withhold low-weight/payment-weight alignment.** In the no-weight P_withhold subcase where the honest builder withholds because **A1a** (ii) fails and no proposer equivocation is visible, the total online honest same-slot attestation weight for slot $`N`$ that can be included on the canonical chain before the $`\mathsf{epoch}(N)+1 \to \mathsf{epoch}(N)+2`$ payment check is also `< 40%` of $`W`$. This side condition is needed because **G-PayAttest** is slot-keyed, not head-keyed: same-slot attestations for an older head or another slot-$`N`$ block can otherwise increment the slot-$`N`$ pending payment even if they do not support $`B`$.
 - **(I_slash) P_withhold slashing inclusion.** In the equivocation-driven P_withhold subcase where the honest builder withholds because it observed valid proposer-equivocation evidence, and a canonical IOU for this builder bid remains, some valid `ProposerSlashing` for $`B`$'s slot-$`N`$ proposer is included and processed on the canonical chain before the `builder_pending_payments` entry for slot $`N`$ is checked at the $`\mathsf{epoch}(N)+1 \to \mathsf{epoch}(N)+2`$ boundary. The spec guarantees that processing the slashing clears the IOU; this hypothesis supplies the inclusion-and-processing event.
   *On "checked at the boundary".* This phrasing is happy-path shorthand: there is no spec function that fires on a wall-clock boundary. In practice the slot-$`N`$ entry is checked when the first canonical block at slot $`\geq`$ start of $`\mathsf{epoch}(N)+2`$ is processed via `on_block`. Its `state_transition` advances `state.slot` past the boundary by running `process_slots`, which runs `process_epoch` at the boundary it crosses, which calls `process_builder_pending_payments`. Under standard Gasper liveness (S1 + S2 + an honest proposer schedule) such a block exists eventually; P_pay's Case 1b proof spells out the same liveness step explicitly.
-- **(L_verify) Payload-processing liveness.** In P_rev, after an honest builder reveals a valid payload and blob sidecars within A1a/A1b's reveal-time-safety window, online honest PTC members complete the local payload/blob observations needed for their True/True Phase 4 vote before the PTC deadline. Also, the honest nodes needed for the first canonical successor decision complete `on_execution_payload_envelope` for the parent block before that successor is proposed or voted on. The latter includes both `is_data_available` and `verify_execution_payload_envelope`, so `store.payloads[B.root]` is populated in time. **S1** supplies network delivery; **L_verify** supplies the local payload/DA/EL processing bound.
-- **(L_successor) P_rev successor liveness.** In P_rev, after honest fork choice favours the FULL child of $B$, canonical block production continues long enough for some proposer following that fork-choice decision to publish a canonical successor that declares $B$ FULL. This is the usual chain-liveness / honest-proposer-schedule condition needed to turn a fork-choice preference into an on-chain child; without any subsequent canonical block, $B$ has no retrospective FULL/EMPTY status.
 - **(L_withdraw) Withdrawal-pipeline liveness.** In P_pay, after a `BuilderPendingWithdrawal` is queued, canonical FULL blocks with accepted execution payloads continue often enough to drain the builder-pending-withdrawal queue. The block that drains the entry also has its execution payload accepted by the EL, so the `Withdrawal` emitted for the proposer's `fee_recipient` is actually credited on the execution layer.
 
 ---
 
 ### 9.2 Algorithmic assumptions
 
-*Each G-assumption pins down the behaviour of an internal spec function. Each is given as a pseudocode definition that captures the assumption's content for the purposes of proving the Category B and Category C properties (P_rev, P_withhold, P_pay): pedagogical pseudocode rather than the full spec body. Category A (P_can, P_exec, P_DA) cites few or none of these; each proof sketch in §9.3 lists the assumptions it uses.*
+*Each G-assumption pins down the behaviour of an internal spec function. Each is given as a pseudocode definition that captures the assumption's content for the purposes of proving the Category B and Category C properties (P_rev, P_withhold, P_pay): pedagogical pseudocode rather than the full spec body. Category A (P_can, P_exec, P_DA) cites few or none of these; each proof in §9.3 lists the assumptions it uses.*
 
 The remaining G-assumptions cover **payment + slashing machinery** (G-PayAttest, G-PayEpoch, G-Solvency, G-BidAdmit, G-Settle, G-Slashing). The fork-choice machinery (`get_node_children`, `get_weight`, `get_supported_node`, `is_ancestor`, `on_block`'s parent-FULL assertion) is shown directly in §6 and is therefore not carried as a G-assumption here; proofs cite the §6 code by function name. Each subsection below lists the remaining assumption, its statement, and a collapsible pseudocode definition.
 
@@ -1688,30 +1695,30 @@ def process_proposer_slashing(state: BeaconState, proposer_slashing: ProposerSla
 
 ---
 
-### 9.3 Proof sketches
+### 9.3 Proofs
 
-*Each sketch states the claim and presents a finite chain of citations into the assumptions of §9.1–§9.2, the cautious-reveal protocols A1a/A1b in §5 Phase 3, and the handler code shown in §5–§7.*
+*Each proof states the property and establishes it from the assumptions of §9.1–§9.2, the cautious-reveal protocols A1a/A1b in §5 Phase 3, and the handler code shown in §5–§7.*
 
-The argument is valid **given** the stated assumptions. The sketches are ordered to match §4's categorisation: Category A (P_can, P_exec, P_DA; payment-trustlessness-independent), Category B (P_rev, P_withhold; payment-trustlessness-dependent, each with two cases), Category C (P_pay; trustless-only).
+Each proof is valid **given** its stated assumptions. The proofs are ordered to match §4's categorisation: Category A (P_can, P_exec, P_DA; payment-trustlessness-independent), Category B (P_rev, P_withhold; payment-trustlessness-dependent, each with two cases), Category C (P_pay; trustless-only).
 
 ---
 
 **P_can (Block safety) — Category A.**
 
-*Claim:* Let $B$ be a block at slot $N$ proposed by an honest proposer, extending a block $B'$ at slot $N{-}1$ with $B'$ canonical forever. Assume **S1** (synchrony) and **S2** (β < 20%). If $B$ includes a valid bid, then $B$ remains in the canonical chain at every later time. (Recall: an honest proposer broadcasts at slot start — hence timely in the §9.1 sense — and does not equivocate.)
+*Claim:* Let $B$ be a block at slot $N$ proposed by an honest proposer, extending a block $B'$ at slot $N{-}1$ with $B'$ canonical forever. Assume **S1** (synchrony), **S2** (β < 20%), and — only when $B$ declares its parent $B'$ FULL — **L_parent** (§9.1). If $B$ includes a valid bid, then $B$ remains in the canonical chain at every later time. (Recall: an honest proposer broadcasts at slot start — hence timely in the §9.1 sense — and does not equivocate.)
 
 <details>
-<summary><b>Proof sketch</b> (click to expand)</summary>
+<summary><b>Proof</b> (click to expand)</summary>
 
-*Proof.* Let $`W`$ denote the per-slot balance denominator from **S2**. An honest slot-$`N`$ proposer broadcasts $`B`$ at slot start and does not equivocate. By **S1**, every online honest slot-$`N`$ validator receives $`B`$ by $`T_{\mathrm{att}}`$; by non-equivocation, no sibling of $`B`$ at slot $`N`$ by the same proposer is visible. By the Phase 2 `attest` handler, each online honest slot-$`N`$ attester casts a same-slot attestation for $`B`$ as its local head; by $`T_{\mathrm{att}} + \Delta < T_{\mathrm{ptc}}`$ these attestations propagate to every honest node. By **S2**, the honest online weight on $`B`$ at slot $`N+1`$ is at least $`(1-\beta) W > 0.8 W`$.
+*Proof.* Let $`W`$ denote the per-slot balance denominator from **S2**. An honest slot-$`N`$ proposer broadcasts $`B`$ at slot start and does not equivocate. By **S1**, every online honest slot-$`N`$ validator receives $`B`$ by $`T_{\mathrm{att}}`$; by non-equivocation, no sibling of $`B`$ at slot $`N`$ by the same proposer is visible. *Admission of $`B`$:* if $`B`$ declares its parent $`B'`$ EMPTY, `on_block` fires no parent-FULL assertion and every honest node that received $`B`$ admits it. If $`B`$ declares $`B'`$ FULL, `on_block` admits $`B`$ at a node only once that node has locally verified $`B'`$'s payload (`is_payload_verified(B'.root)`, fork-choice.md:924–925); **L_parent** supplies this for every online honest node by $`T_{\mathrm{att}}`$ (and the retry that closes the arrival-order gap), so every online honest node admits $`B`$ in this case too. By the Phase 2 `attest` handler, each online honest slot-$`N`$ attester then casts a same-slot attestation for $`B`$ as its local head; by $`T_{\mathrm{att}} + \Delta < T_{\mathrm{ptc}}`$ these attestations propagate to every honest node. By **S2**, the honest online weight on $`B`$ at slot $`N+1`$ is at least $`(1-\beta) W > 0.8 W`$.
 
 A boost-only reorg attempt at slot $N+1$ would require some competitor $B''$ to outweigh $B$; $B''$ receives proposer boost (40% $`W`$) plus at most $\beta W < 20\% W$ of Byzantine attestation, total $< 60\% W < 80\% W$. By the §6 `get_weight` and `get_head` code (weight arithmetic including proposer boost), no boost-only reorg succeeds.
 
 The weight argument fixes parent($`B`$): it rules out competitors that share parent($`B`$). The hypothesis "$`B'`$ will remain canonical forever" closes the remaining reorg vector at the parent level — a sibling branch of parent($`B`$) cannot pull parent($`B`$) off-chain by hypothesis. The missing-slot configuration (a colluding Byzantine pair seating a competing sibling at a missing slot between parent($`B`$) and $`B`$) is excluded by the precondition "$`B`$ extends $`B'`$ at slot $`N{-}1`$": under that precondition, $`B`$'s parent is $`B'`$ at slot $`N{-}1`$, so there is no missing slot to exploit.
 
-Under these conditions, $B$ has $> 80\% W$ at slot $N+1$ and no competitor at slot $N+1$ or later can accumulate enough weight to overtake it (every later slot's competitor faces the same arithmetic). Hence $B$ remains canonical at every later time.
+Under these conditions, $`B`$ has $`> 80\% W`$ at slot $`N+1`$ and no competitor there can overtake it. *Persistence to every later time* is by induction on slots $`M \geq N+1`$, with hypothesis $`H_M`$: "$`B`$ is an ancestor of the canonical head at the start of slot $`M`$." **Base case** ($`M = N+1`$) is the $`>80\% W`$-vs-$`<60\% W`$ argument just given. **Inductive step:** assume $`H_M`$. Then $`B`$'s branch carries the unique super-majority of latest messages, so every online honest slot-$`M`$ validator's `get_head` returns a descendant of $`B`$ (§6 `get_weight`/`get_head`); by **S2** at slot $`M`$ these validators cast same-slot attestations for that descendant, which become their latest messages and contribute $`\geq (1-\beta) W > 80\% W`$ to $`B`$'s branch — overwriting their slot-$`(M{-}1)`$ votes, so the super-majority is *renewed*, not merely retained. Any node not descending from $`B`$ accrues only proposer boost ($`\leq 40\% W`$) plus Byzantine weight ($`< \beta W < 20\% W`$), total $`< 60\% W < 80\% W`$. Hence $`B`$'s branch outweighs every alternative at slot $`M{+}1`$, giving $`H_{M+1}`$. By induction $`B`$ is canonical at every slot $`\geq N+1`$ — i.e. at every later time.
 
-*Assumptions used:* **S1**, **S2**, **honest slot-$`N`$ proposer** (subsumes timeliness and non-equivocation, see §4 P_can note); plus §6 `get_weight` / `get_head` code (boost-only-reorg arithmetic) and the Phase 2 `attest` handler (honest same-slot voting behaviour). The configuration preconditions on $`B`$ ($`B`$ extends $`B'`$ at slot $`N{-}1`$ and $`B'`$ remains canonical forever) supply the missing-slot exclusion and the parent-canonicity needed for the boost-only-reorg argument.
+*Assumptions used:* **S1**, **S2** (applied at slot $`N{+}1`$ and, for the "forever" conclusion, at each later slot — the Gasper persistence step), **honest slot-$`N`$ proposer** (subsumes timeliness and non-equivocation, see §4 P_can note), and **L_parent** (only when $`B`$ declares its parent FULL — supplies admission of $`B`$ at every honest node despite the `on_block` parent-FULL assertion); plus §6 `get_weight` / `get_head` code (boost-only-reorg arithmetic) and the Phase 2 `attest` handler (honest same-slot voting behaviour). The configuration preconditions on $`B`$ ($`B`$ extends $`B'`$ at slot $`N{-}1`$ and $`B'`$ remains canonical forever) supply the missing-slot exclusion and the parent-canonicity needed for the boost-only-reorg argument. **S3 and S4 are not used:** admission routes through **L_parent**, not the PTC, so PTC honesty (**S3**) is irrelevant — a Byzantine PTC can at most drive the honest proposer to declare its parent EMPTY, which leaves $`B`$ admissible at every honest node and equally canonical; and **S4** is the global restrictive adversary bound (§4), never a per-proof premise — here **L_parent** already excludes the role-oblivious split S4 would otherwise have to constrain.
 
 </details>
 
@@ -1722,7 +1729,7 @@ Under these conditions, $B$ has $> 80\% W$ at slot $N+1$ and no competitor at sl
 *Claim:* Let $B$ be a block proposed in slot $N$ and let $P$ be the payload associated with $B$ (i.e., `bid(B).block_hash = P.block_hash`). With the only possible exception of builders, the protocol does not require any other honest actor to complete the execution of $P$ before the beginning of slot $N+1$.
 
 <details>
-<summary><b>Proof sketch</b> (click to expand)</summary>
+<summary><b>Proof</b> (click to expand)</summary>
 
 *Proof.* We enumerate the honest actors whose duties fire at or before the end of slot $N$, and verify that none of them needs $P$ executed to perform those duties.
 
@@ -1752,7 +1759,7 @@ Neither of these places an execution deadline on slot-$`N`$ honest actors: (1) i
 *Claim:* Under **S2** (β < 20%, giving an honest super-majority): if a payload hash $h$ belongs to the payload hash chain of the canonical beacon chain (i.e., $h$ is on chain in the §3 sense), then the corresponding payload and blob data were available to at least one honest node. More precisely, some honest node successfully processed, via `on_block`, a canonical block that declared the corresponding beacon block FULL. At that node, the corresponding `ExecutionPayloadEnvelope` with `payload.block_hash == h` is in `store.payloads`; that payload is valid (it passed `verify_execution_payload_envelope`), and its associated blob data is available in the spec-local sense required by `is_data_available`.
 
 <details>
-<summary><b>Proof sketch</b> (click to expand)</summary>
+<summary><b>Proof</b> (click to expand)</summary>
 
 *Proof.* Suppose $`h`$ is on chain. By the §3 equivalent characterization, there exist canonical blocks $`B^*`$ (with $`B^*`$'s `bid.block_hash` equal to $`h`$) and $`C`$, $`B^*`$'s canonical child, satisfying $`C`$'s `bid.parent_block_hash` equal to $`h`$ — equivalently, $`C`$ declares $`\texttt{parentStatus}(B^*) = \mathrm{FULL}`$. By **S2** (honest super-majority of attestation weight), Byzantine votes alone cannot make any block canonical; so the canonical chain accumulates honest attestation weight, and in particular some honest node $`v`$ successfully processed $`C`$ through `on_block`, adding $`C`$ to its fork-choice store. By the §6 `on_block` parent-FULL assertion, this processing of $`C`$ at $`v`$ required $`\texttt{is\_payload\_verified}(v.\texttt{store}, B^*.\texttt{root})`$, i.e., $`B^*.\texttt{root} \in v.\texttt{store.payloads}`$, at that time. Hence $`v`$ holds the `ExecutionPayloadEnvelope` with `payload.block_hash == h`, witnessing P_DA's existential conclusion. The identity of $`C`$'s proposer (slot-$`N{+}1`$'s or any later slot's, honest or Byzantine) does not enter the argument: only that $`C`$ ends up on the canonical chain — which the on-chain hypothesis forces — and that `on_block`'s gate forces any honest node that successfully processes such a FULL-declaring block to have the payload locally verified.
 
@@ -1775,7 +1782,7 @@ The only path to populating $`\texttt{store.payloads}[B^*.\texttt{root}]`$ is `o
 *Claim:* For every block $B$ on the canonical chain, `bid(B).parent_block_hash ∈ {bid(parent(B)).block_hash, bid(parent(B)).parent_block_hash}`.
 
 <details>
-<summary><b>Proof sketch</b> (click to expand)</summary>
+<summary><b>Proof</b> (click to expand)</summary>
 
 *Proof.* Enforced by `process_execution_payload_bid` (§5 Phase 1b), which asserts `bid.parent_block_hash == state.latest_block_hash`. At $B$'s processing time, `state.latest_block_hash` takes exactly one of two values: `bid(parent(B)).block_hash` if `process_parent_execution_payload` applied `parent(B)`'s payload effects (declaring `parent(B)` FULL), or `bid(parent(B)).parent_block_hash` otherwise (declaring `parent(B)` EMPTY). Any block whose `bid.parent_block_hash` differs from both values fails the assertion and is rejected at admission. Under **S2** (honest super-majority), rejected blocks cannot become canonical. See the §3.1 expansion box for the chain-layer vs. state-machine equivalence.
 
@@ -1795,7 +1802,7 @@ The only path to populating $`\texttt{store.payloads}[B^*.\texttt{root}]`$ is `o
 Both cases share the same proof structure: canonicity of $B$ (Part i), then the FULL declaration on chain (Part ii). The only differences are the source of canonicity (P_can vs $`\Sigma_R`$) and the protocol the builder follows (A1a vs A1b).
 
 <details>
-<summary><b>Proof sketch — trustless case</b> (click to expand)</summary>
+<summary><b>Proof — trustless case</b> (click to expand)</summary>
 
 *Proof.* Two parts: (i) $`B`$ stays canonical (by P_can); (ii) the slot-$`N{+}1`$ fork-choice eventually declares $`B`$ FULL on chain.
 
@@ -1814,7 +1821,7 @@ Both cases share the same proof structure: canonicity of $B$ (Part i), then the 
 </details>
 
 <details>
-<summary><b>Proof sketch — non-trustless case</b> (click to expand)</summary>
+<summary><b>Proof — non-trustless case</b> (click to expand)</summary>
 
 *Proof.* Two parts: (i) $`B`$ stays canonical (by $`\Sigma_R`$); (ii) the slot-$`N{+}1`$ fork-choice eventually declares $`B`$ FULL on chain.
 
@@ -1840,7 +1847,7 @@ Both cases share the same proof structure: canonicity of $B$ (Part i), then the 
 - **Non-trustless case** (`bid.execution_payment > 0`, `bid.value = 0`): trivially true, no IOU is ever created.
 
 <details>
-<summary><b>Proof sketch — trustless case</b> (click to expand)</summary>
+<summary><b>Proof — trustless case</b> (click to expand)</summary>
 
 *Proof.* **A1a** condition (i) $t_{\mathrm{rev}} \geq T_{\mathrm{att}} + \Delta$ is a timing precondition, so any withholding by an honest builder reduces to **A1a** (ii) or **A1a** (iii) failing. We split on which.
 
@@ -1858,7 +1865,7 @@ In every case, the path to charging the builder either fails to reach quorum (Ca
 </details>
 
 <details>
-<summary><b>Proof sketch — non-trustless case</b> (click to expand)</summary>
+<summary><b>Proof — non-trustless case</b> (click to expand)</summary>
 
 *Proof.* By **G-BidAdmit**, when `bid.value = 0` no `BuilderPendingPayment` IOU is recorded ([beacon-chain.md:1475](consensus-specs/specs/gloas/beacon-chain.md#L1475) gates the IOU on `amount > 0`). No `payment.weight` accumulates via **G-PayAttest** (the precondition `payment.withdrawal.amount > 0` fails). No `BuilderPendingWithdrawal` is appended via **G-PayEpoch** (no entry to check at the epoch boundary). The protocol's charging mechanism is therefore entirely absent. The builder cannot be debited by the protocol regardless of reveal or withhold choice.
 
@@ -1874,10 +1881,10 @@ In every case, the path to charging the builder either fails to reach quorum (Ca
 
 *Claim:* Let $B$ be a block at slot $N$ with `bid.value > 0` proposed by an honest proposer, extending a block $B'$ at slot $N{-}1$ with $B'$ canonical forever. Assume **S1** (synchrony), **S2** (β < 20%), P_pay's attestation-inclusion hypothesis from §4 (all attestations cast by online honest validators at slot $N$ are included on the canonical chain before the start of epoch $`\mathsf{epoch}(N) + 2`$), and **L_withdraw**. Then the proposer's `fee_recipient` is eventually credited with the bid amount, and the payment is single (no double-charge). The case `bid.value = 0` is vacuously covered: by **G-BidAdmit**, no IOU is created, and no payment is owed.
 
-The protocol delivers the credit in two steps under these assumptions: *(i)* a `BuilderPendingWithdrawal` entry is eventually queued in `state.builder_pending_withdrawals` via Path A or Path B; *(ii)* a later canonical FULL block drains that entry, debits the builder's CL balance, places the corresponding `Withdrawal` in that block's expected execution-payload withdrawals, and the accepted payload credits the proposer's `fee_recipient` at the EL (timing detailed in §7's drop-down on EL credit). The proof sketch below establishes (i) in Part 1, single-payment in Part 3, and cites **L_withdraw** for (ii) in Part 2. Section 7's Path C corner is an extra revealed-payload missed-slot case outside the attestation-inclusion route.
+The protocol delivers the credit in two steps under these assumptions: *(i)* a `BuilderPendingWithdrawal` entry is eventually queued in `state.builder_pending_withdrawals` via Path A or Path B; *(ii)* a later canonical FULL block drains that entry, debits the builder's CL balance, places the corresponding `Withdrawal` in that block's expected execution-payload withdrawals, and the accepted payload credits the proposer's `fee_recipient` at the EL (timing detailed in §7's drop-down on EL credit). The proof below establishes (i) in Part 1, single-payment in Part 3, and cites **L_withdraw** for (ii) in Part 2. Section 7's Path C corner is an extra revealed-payload missed-slot case outside the attestation-inclusion route.
 
 <details>
-<summary><b>Proof sketch</b> (click to expand)</summary>
+<summary><b>Proof</b> (click to expand)</summary>
 
 *Proof.* By **G-BidAdmit**, processing block $N$ at every honest node creates exactly one `BuilderPendingPayment` IOU at `state.builder_pending_payments[SLOTS_PER_EPOCH + (slot % SLOTS_PER_EPOCH)]` — the upper-half slot of the 2-epoch ring buffer for the current epoch. The IOU's two fields ([beacon-chain.md:226](consensus-specs/specs/gloas/beacon-chain.md#L226)) are initialised as follows.
 
