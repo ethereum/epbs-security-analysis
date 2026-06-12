@@ -1855,7 +1855,7 @@ Both cases share the same proof structure: canonicity of $B$ (Part i), then the 
 
 **P_withhold (Builder withholding protection) — Category B.**
 
-*Claim:* Let $B$ be a bid-carrying block at slot $N$; in the trustless case let $B$ additionally extend a block $B'$ at slot $N{-}1$ with $B'$ canonical forever. There exists a protocol an honest builder can follow such that, if the builder withholds its execution payload, the protocol does not charge it. Two cases:
+*Claim:* Let $B$ be a bid-carrying block at slot $N$. There exists a protocol an honest builder can follow such that, if the builder withholds its execution payload, the protocol does not charge it. Two cases:
 
 - **Trustless case** (`bid.value > 0`): the protocol is **A1a** (§5 Phase 3). Assumptions: the canonicity precondition ($`B`$ extends $`B'`$ at slot $`N{-}1`$, $`B'`$ canonical forever), **S1** (synchrony), **S2** (β < 20%), **L_head** (builder fork-choice processing liveness; §9.1), and **I_slash** for the equivocation-driven subcase where a canonical IOU for this builder bid remains, plus algorithmic G-assumptions.
 - **Non-trustless case** (`bid.execution_payment > 0`, `bid.value = 0`): trivially true, no IOU is ever created.
