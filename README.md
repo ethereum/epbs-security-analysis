@@ -1933,12 +1933,6 @@ The proposer's `fee_recipient` is thus queued exactly once (Parts 1, 3) and even
 
 ---
 
-## 10. Summary
-
-This document makes externally observable claims organised in three categories (A: P_can, P_exec, P_DA, P_valid always-on; B: P_rev, P_withhold payment-trustlessness-dependent, each with two cases; C: P_pay trustless-only), traces their enforcement, and surfaces every unresolved assumption. The payment- and slashing-machinery guarantees (P_withhold, P_pay) rest on algorithmic assumptions about internal spec functions (the G-prefix assumptions in §9.2); the Category A properties (P_can, P_exec, P_DA, P_valid) and P_rev cite no G-assumption — they follow from the spec's code structure together with the network, participation, and reveal-timing assumptions each proof lists, and P_exec in particular cites no assumption at all. Several internal mechanisms (two-phase block processing, `store.payloads` gating the FULL node, same-slot payload-neutrality of the weight computation, witness-statement semantics of honest PTC voting, bid commitments being binding) are treated as *descriptions* in §3 and §5, not as Properties, because they are not directly verifiable from network messages alone.
-
----
-
 ## Appendix A — Proofs of the algorithmic assumptions (G-lemmas)
 
 > **TL;DR.** Each §9.2 G-assumption is a factual claim about what one spec function does. This appendix promotes them to **lemmas** proved against the Gloas spec at commit `8e19f82b`. A G-lemma proof has four obligations: **trigger** (every named precondition is checked, with the right kind of check), **effect** (the precise mutation and magnitude), **frame** (no *other* spec path produces the effect — established by grepping every writer of the governed field across the full `phase0 → … → fulu → gloas` hierarchy), and **minimality** (the lemma claims nothing the function does not do). The frame obligation is the load-bearing one: it is the clause every §9 proof silently relies on.
