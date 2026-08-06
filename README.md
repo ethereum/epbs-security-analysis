@@ -8,7 +8,7 @@ This document is a security analysis of ePBS. We walk through the protocol's lif
 
 **Who should read this.** Anyone who wants a rigorous but readable account of how ePBS works: what changed from pre-ePBS, why, and what guarantees the protocol provides. We assume familiarity with Ethereum's consensus layer (Gasper, LMD-GHOST, FFG, attestation committees, fork choice). We do not assume prior knowledge of EIP-7732.
 
-**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`e656e15e1`](https://github.com/ethereum/consensus-specs/commit/e656e15e19cd68f0ca8b87dbf086bc33de90af9c), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/e656e15e19cd68f0ca8b87dbf086bc33de90af9c/specs/gloas); inline spec-file references are to that commit. The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
+**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`5366cb59e`](https://github.com/ethereum/consensus-specs/commit/5366cb59eb39e4ec1d6c468a79cceb626c14c048), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/5366cb59eb39e4ec1d6c468a79cceb626c14c048/specs/gloas); inline spec-file references are to that commit. The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
 
 **Notation.** Code blocks use Python syntax at an abstracted level. An `...` in arguments or fields means "additional fields omitted for brevity." One convention is worth knowing upfront; the rest are reference material in the expandable table below.
 
@@ -100,7 +100,7 @@ ePBS introduces one new actor and modifies the role of existing ones.
 **PTC member** — *new role for existing validators*. A subcommittee of 512 ballot positions per slot, sampled from the slot's regular attestation committees by effective balance (a high-balance validator may occupy multiple positions; the >256-True threshold counts ballot positions, not distinct validators). Key properties:
 
 - **PTC members are themselves attesters for the slot.** Every PTC member also belongs to one of the slot's attestation committees and casts the standard same-slot attestation at $T_{\mathrm{att}}$ in addition to the PTC witness statement at $T_{\mathrm{ptc}}$. Throughout this document and in the figures we draw the PTC as a separate column from Attesters. This is a *pedagogical* separation, not a mechanical one, isolating the witness-statement duty (a binary observation about payload arrival) from the head-vote duty (which drives fork-choice weight).
-- **Distinct duty.** The PTC casts a **payload timeliness attestation** at 75% of the slot, reporting two independent signals: `payload_present` (whether the member observed the `SignedExecutionPayloadEnvelope` arrive) and `blob_data_available` (whether the member's sampled blob data columns arrived and passed KZG verification). Both are binary observations, never validity judgments. The spec object is a `PayloadAttestationMessage` ([`beacon-chain.md`](https://github.com/ethereum/consensus-specs/blob/e656e15e19cd68f0ca8b87dbf086bc33de90af9c/specs/gloas/beacon-chain.md)); we follow the PBS literature and use the shorthand **witness statement** (or **witness vote**), since the PTC is *witnessing* payload and blob-data arrival, not judging execution validity. Phase 4 (§5) details the two-signal mechanics.
+- **Distinct duty.** The PTC casts a **payload timeliness attestation** at 75% of the slot, reporting two independent signals: `payload_present` (whether the member observed the `SignedExecutionPayloadEnvelope` arrive) and `blob_data_available` (whether the member's sampled blob data columns arrived and passed KZG verification). Both are binary observations, never validity judgments. The spec object is a `PayloadAttestationMessage` ([`beacon-chain.md`](https://github.com/ethereum/consensus-specs/blob/5366cb59eb39e4ec1d6c468a79cceb626c14c048/specs/gloas/beacon-chain.md)); we follow the PBS literature and use the shorthand **witness statement** (or **witness vote**), since the PTC is *witnessing* payload and blob-data arrival, not judging execution validity. Phase 4 (§5) details the two-signal mechanics.
 - **Observation, not validation.** PTC members run `on_execution_payload_envelope` as part of normal node operation, but payload validity is *not* a precondition for the PTC vote. The vote is conditioned solely on payload observation.
 
 ---
@@ -285,7 +285,7 @@ This is the foundation of Property P_DA (Data availability for chain inclusion) 
 
 > **TL;DR.** A bid carries two distinct payment fields: `value` (trustless: the protocol settles it via the unconditional-payment mechanism) and `execution_payment` (non-trustless: an advertised promise the protocol does not enforce). The public bid gossip topic rejects non-zero `execution_payment`; bids with non-zero `execution_payment` must travel through some off-protocol channel. Properties in §4 split along this divide: some hold regardless of which field a builder uses, others apply only when one of the two is set.
 
-We've referred to "the builder's bid" loosely; we now make the object concrete. The bid is the `ExecutionPayloadBid` SSZ container, wrapped in `SignedExecutionPayloadBid` for transport. Spec source: [`beacon-chain.md`](https://github.com/ethereum/consensus-specs/blob/e656e15e19cd68f0ca8b87dbf086bc33de90af9c/specs/gloas/beacon-chain.md) §`ExecutionPayloadBid`. The fields:
+We've referred to "the builder's bid" loosely; we now make the object concrete. The bid is the `ExecutionPayloadBid` SSZ container, wrapped in `SignedExecutionPayloadBid` for transport. Spec source: [`beacon-chain.md`](https://github.com/ethereum/consensus-specs/blob/5366cb59eb39e4ec1d6c468a79cceb626c14c048/specs/gloas/beacon-chain.md) §`ExecutionPayloadBid`. The fields:
 
 ```python
 class ExecutionPayloadBid(Container):
@@ -350,13 +350,13 @@ With the only possible exception of builders, the protocol does not require any 
 
 #### Lifecycle liveness: exit, withdrawal, and registration
 
-The four properties above are *safety* claims. ePBS also makes a family of *liveness* claims about actors entering and leaving their roles — committed stake can be recovered, and new participants can join. These remain **payment-trustlessness-independent** (they hold regardless of which payment field a builder ever used), so they sit in Category A; but unlike the safety properties they are **eventual** guarantees, conditional on continued block production (the chain-liveness side condition **L_withdraw**, already used by P_pay) — and, for builder activation, on finality continuing to advance (**L_finality**, §9.1). An observer verifies them from on-chain withdrawals and the builder registry, so they remain externally observable.
+The four properties above are *safety* claims. ePBS also makes a family of *liveness* claims about actors entering and leaving their roles — committed stake can be recovered, and new participants can join. These remain **payment-trustlessness-independent** (they hold regardless of which payment field a builder ever used), so they sit in Category A; but unlike the safety properties they are **eventual** guarantees — for the two exit properties, conditional on continued block production (the chain-liveness side condition **L_withdraw**, already used by P_pay); for builder registration, conditional on the registration landing in a canonical FULL payload and on finality continuing to advance (**L_finality**, §9.1). An observer verifies them from on-chain withdrawals and the builder registry, so they remain externally observable.
 
 **P_exit_validator: Exited-validator withdrawal liveness.** Assume **L_withdraw** (canonical FULL blocks keep being produced). If a validator with **execution-layer withdrawal credentials** has exited and become withdrawable, its full remaining balance is **eventually** withdrawn to its withdrawal address. (The credential qualifier is load-bearing: the sweep's `is_fully_withdrawable_validator` check skips a validator still on BLS `0x00` credentials until it rotates them — such a validator has no withdrawal address to pay.)
 
 **P_exit_builder: Exited-builder withdrawal liveness.** Assume **L_withdraw** and the builder-sweep budget side condition **L_payment_drain** (§9.1). If a builder has exited and become withdrawable, its full remaining balance is **eventually** withdrawn to its `execution_address`.
 
-**P_join_builder: Builder registration liveness.** Assume **L_withdraw** and **L_finality** (finalized checkpoints keep advancing; §9.1). A **valid builder registration** — a `BuilderDepositRequest` whose pubkey is not already in the builder registry, with a valid deposit signature, builder-withdrawal credentials (prefix `BUILDER_WITHDRAWAL_PREFIX` = `0xB0`), and an amount above the bidding floor (§2) — **eventually** results in a registered builder that becomes active and able to bid.
+**P_join_builder: Builder registration liveness.** Assume **L_finality** (finalized checkpoints keep advancing; §9.1). A **valid builder registration** — a `BuilderDepositRequest` **carried in an execution payload whose block is declared FULL on the canonical chain**, whose pubkey is not already in the builder registry, with a valid deposit signature, builder-withdrawal credentials (prefix `BUILDER_WITHDRAWAL_PREFIX` = `0xB0`), and an amount above the bidding floor (§2) — **eventually** results in a registered builder that becomes active and able to bid. (The FULL-carriage clause is load-bearing: a request riding in a payload whose slot resolves EMPTY is never processed, and the protocol does not re-include it — the depositor's recourse is re-inclusion of the underlying execution-layer transaction in a later payload, outside this document's model.)
 
 The withdrawal-sweep machinery these rest on — the per-block sweep budget and stage ordering, the validator-vs-builder sweep asymmetry, and the ≈6.8-hour builder withdrawability delay — is described in §7; the proofs, the shared **sweep-progress** lemma, and the **L_payment_drain** and **L_finality** side conditions are in §9.
 
@@ -462,7 +462,7 @@ def submit_bid(builder, upcoming_slot, state, proposer_preferences):
     parent_bid = state.latest_execution_payload_bid
     parent_hash = (
         parent_bid.block_hash
-        if should_build_on_full(store, head)
+        if should_build_on_full(store, head, get_current_slot(store))
         else parent_bid.parent_block_hash
     )
     payload, execution_requests = execution_engine.build_payload(
@@ -556,11 +556,11 @@ When other nodes receive the beacon block, they run `process_block`. Here is wha
      process_block_header(state, block)
      process_withdrawals(state)
 -    process_execution_payload(state, block.body.execution_payload, ...)
-+    process_execution_payload_bid(state, block.body.signed_execution_payload_bid)  # Verify the bid, arm payment
++    parent_slot = process_execution_payload_bid(state, block.body.signed_execution_payload_bid)  # Verify the bid, arm payment; returns parent slot
      process_randao(state, block.body)
      process_eth1_data(state, block.body)
--    process_operations(state, block.body)              # Same name, but modified internally
-+    process_operations(state, block.body)              # Processes payload_attestations; direct execution-request ops are removed
+-    process_operations(state, block.body)                          # Same name, but modified internally
++    process_operations(state, block.body, parent_slot)             # Processes payload_attestations; parent_slot threaded to process_attestation; direct execution-request ops are removed
      process_sync_aggregate(state, block.body.sync_aggregate)
 ```
 
@@ -573,7 +573,7 @@ The other key new function called here is `process_execution_payload_bid`, which
 ```python
 def process_execution_payload_bid(
     state: BeaconState, signed_bid: SignedExecutionPayloadBid
-) -> None:
+) -> Slot:
     bid = signed_bid.message
     builder_index = bid.builder_index
     amount = bid.value
@@ -621,8 +621,13 @@ def process_execution_payload_bid(
             pending_payment
         )
 
-    # Cache the signed execution payload bid
+    # Cache the parent block's slot before overwriting the bid, then cache the bid.
+    # The returned parent_slot is used only by process_attestation to look up the
+    # attested block's payload availability for the timely-head reward; no property
+    # or lemma below depends on it.
+    parent_slot = state.latest_execution_payload_bid.slot
     state.latest_execution_payload_bid = bid
+    return parent_slot
 ```
 
 Fee-recipient equality, gas-limit-target compatibility, and the rule that `bid.slot` is greater than the slot of `bid.parent_block_root` are builder/gossip-side obligations, enforced by `builder.md` and the `p2p-interface.md` topic validators. They are not beacon-chain assertions inside `process_execution_payload_bid`.
@@ -752,7 +757,7 @@ The builder's **payment** is not settled at this point. It is settled later, whe
 
 #### Cautious-reveal protocols an honest builder can follow
 
-The spec prescribes only the minimal honest rule: reveal when the block is timely and is the head of the local chain ([`builder.md`](https://github.com/ethereum/consensus-specs/blob/e656e15e19cd68f0ca8b87dbf086bc33de90af9c/specs/gloas/builder.md)). The §4 property statements (P_rev, P_withhold) reference *cautious-reveal protocols* that strengthen this minimum. Two protocols, one per case; an honest builder picks the one that matches their bid's payment field:
+The spec prescribes only the minimal honest rule: reveal when the block is timely and is the head of the local chain ([`builder.md`](https://github.com/ethereum/consensus-specs/blob/5366cb59eb39e4ec1d6c468a79cceb626c14c048/specs/gloas/builder.md)). The §4 property statements (P_rev, P_withhold) reference *cautious-reveal protocols* that strengthen this minimum. Two protocols, one per case; an honest builder picks the one that matches their bid's payment field:
 
 **Protocol A1a — trustless cautious-reveal (`bid.value > 0`).** Reveal only when all three conditions hold: (i) $T_{\mathrm{att}} + \Delta \leq t_{\mathrm{rev}} < T_{\mathrm{payload\_due}} - \Delta$ — a lower bound (the cautious-reveal floor, used to close the equivocation window) and an upper bound (network reveal-timing safety: the envelope reaches every honest PTC member before `get_payload_due_ms()` under **S1**; **L_verify** supplies the separate local payload/DA/EL processing liveness needed by P_rev); (ii) at least `PROPOSER_SCORE_BOOST` = 40% of $W$ in real attestations supporting the block; (iii) no proposer equivocation by `block.proposer_index` for `block.slot` is visible. The lower bound on (i) ensures any equivocation $B''$ broadcast at $t_{\mathrm{eq}} \leq T_{\mathrm{att}}$ is delivered to the builder by $t_{\mathrm{rev}}$ (S1), so (iii) sees it. The upper bound is the analogue of **A1b**'s reveal-timing-safety condition.
 
@@ -832,7 +837,7 @@ def reveal_payload(builder, block, ...):
 
 *Figure 7: Phase 4 (t = 75%), PTC witness-vote deadline. Each of the 512 PTC members runs `Check payload arrival` and broadcasts a vote carrying two independent signals: `payload_present` and `blob_data_available` (decision tree on the right). The vote is a binary observation, not a validity judgment (the Phase 4 `ptc_vote` code never calls the execution engine); the PTC primary path inside the slot-N+1 chain-inclusion check `should_extend_payload` (described in Phase 5) requires majority support on **both** signals.*
 
-An honest PTC member's slot-level duty consists of three handlers that fire on independent triggers: `on_block` (when the beacon block arrives), `on_execution_payload_envelope` (when the payload arrives, if it does), and `ptc_vote` (at $`T_{\mathrm{ptc}}`$). The first two are common to all nodes; every node processes blocks and payloads the same way. The third is PTC-specific. Below we focus on `ptc_vote`. The handler corresponds to the spec handler in [`validator.md`](https://github.com/ethereum/consensus-specs/blob/e656e15e19cd68f0ca8b87dbf086bc33de90af9c/specs/gloas/validator.md) ("Constructing a payload attestation message"). The four lookup helpers (`has_beacon_block_for_slot`, `get_beacon_block_root_for_slot`, `has_execution_payload_envelope`, `check_blob_data`) are pedagogical names for the corresponding inline checks in the spec prose (the spec uses `is_data_available` for the blob-data check; the others are described in prose rather than as named helpers):
+An honest PTC member's slot-level duty consists of three handlers that fire on independent triggers: `on_block` (when the beacon block arrives), `on_execution_payload_envelope` (when the payload arrives, if it does), and `ptc_vote` (at $`T_{\mathrm{ptc}}`$). The first two are common to all nodes; every node processes blocks and payloads the same way. The third is PTC-specific. Below we focus on `ptc_vote`. The handler corresponds to the spec handler in [`validator.md`](https://github.com/ethereum/consensus-specs/blob/5366cb59eb39e4ec1d6c468a79cceb626c14c048/specs/gloas/validator.md) ("Constructing a payload attestation message"). The four lookup helpers (`has_beacon_block_for_slot`, `get_beacon_block_root_for_slot`, `has_execution_payload_envelope`, `check_blob_data`) are pedagogical names for the corresponding inline checks in the spec prose (the spec uses `is_data_available` for the blob-data check; the others are described in prose rather than as named helpers):
 
 ```python
 @Upon(time_in_slot == T_ptc and validator.index in get_ptc(state, slot))
@@ -1023,9 +1028,9 @@ def should_extend_payload(store: Store, root: Root) -> bool:
 **`should_build_on_full`: the proposer's stricter constraint.** `should_extend_payload` is the tiebreaker every node consults inside `get_head`. The slot N+1 proposer, in addition, must consult a stricter helper before constructing its block:
 
 ```python
-def should_build_on_full(store: Store, head: ForkChoiceNode) -> bool:
+def should_build_on_full(store: Store, head: ForkChoiceNode, slot: Slot) -> bool:
     assert head.payload_status != PAYLOAD_STATUS_PENDING
-    if store.blocks[head.root].slot + 1 != get_current_slot(store):
+    if store.blocks[head.root].slot + 1 != slot:
         return head.payload_status == PAYLOAD_STATUS_FULL
     if head.payload_status == PAYLOAD_STATUS_EMPTY:
         return False
@@ -1035,6 +1040,8 @@ def should_build_on_full(store: Store, head: ForkChoiceNode) -> bool:
         return False
     return True
 ```
+
+The `slot` argument is the slot the proposer is building for; every call site in this document passes `slot = get_current_slot(store)`, which is why the earlier prose writes the two-argument shorthand `should_build_on_full(store, head)`. (The spec factored `slot` out of the function body in `fork-choice.md`; passing the current slot reproduces the previous behaviour exactly.)
 
 The slot N+1 proposer uses this helper before constructing the parts of its block that depend on the parent's execution state. If `head` is EMPTY, the proposer builds on EMPTY. If `head` is FULL and older than the immediately previous slot, the proposer builds on FULL because fork choice has already resolved that payload branch by weight. If `head` is the immediately previous slot's FULL node, either negative PTC quorum is enough to make the proposer build on EMPTY: `blob_data_available = False` via `payload_data_availability(..., available=False)`, or `payload_present = False` via `payload_timeliness(..., timely=False)`. Otherwise, the proposer builds on FULL.
 
@@ -1153,15 +1160,20 @@ def is_ancestor(store: Store, node: ForkChoiceNode, ancestor: ForkChoiceNode) ->
 **Proposer boost update.** A block receives proposer boost only if it is the first boosted block for the slot, it arrived before the attestation deadline, and its dependent root matches the dependent root of the pre-insertion head. The dependent-root check keeps proposer boost aligned with the canonical chain's shuffling dependency.
 
 ```python
-def get_shuffling_dependent_root(store: Store, root: Root, epoch: Epoch) -> Root:
+def compute_shuffling_dependent_slot(epoch: Epoch) -> Slot:
+    # For the first two epochs the dependent slot is the genesis slot,
+    # so get_ancestor returns the genesis root as the dependent root.
     if epoch <= MIN_SEED_LOOKAHEAD:
-        return Root()
+        return GENESIS_SLOT
+    return compute_start_slot_at_epoch(epoch - MIN_SEED_LOOKAHEAD) - Slot(1)
 
+
+def get_shuffling_dependent_root(store: Store, root: Root, epoch: Epoch) -> Root:
     node = ForkChoiceNode(
         root=root,
         payload_status=PAYLOAD_STATUS_PENDING,
     )
-    dependent_slot = Slot(compute_start_slot_at_epoch(epoch - MIN_SEED_LOOKAHEAD) - 1)
+    dependent_slot = compute_shuffling_dependent_slot(epoch)
     return get_ancestor(store, node, dependent_slot).root
 
 
@@ -1190,6 +1202,13 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
     Run ``on_block`` upon receiving a new block.
     """
     block = signed_block.message
+    block_root = hash_tree_root(block)
+
+    # Return early if the block is already known (idempotency; does not affect
+    # the admission checks below, which already ran on first import)
+    if block_root in store.blocks:
+        return
+
     # Parent block must be known
     assert block.parent_root in store.block_states
 
@@ -1217,7 +1236,6 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
     state = copy(store.block_states[block.parent_root])
 
     # Check the block is valid and compute the post-state
-    block_root = hash_tree_root(block)
     state_transition(state, signed_block, validate_result=True)
 
     # Compute head before applying the block
@@ -1551,7 +1569,7 @@ PTC gossip validation and `on_payload_attestation_message` both tie each payload
   **Clause (a) — $`B`$ declares $`B'`$ FULL** (i.e., `bid(B).parent_block_hash = bid(B').block_hash`): every online honest node completes local verification of $`B'`$'s execution payload — `is_data_available` and `verify_execution_payload_envelope`, populating `store.payloads[B'.root]` — before $`T_{\mathrm{att}}`$; and `on_block` re-evaluates a block first rejected by its parent-FULL assertion (`is_payload_verified(block.parent_root)`, fork-choice.md) once that payload becomes locally verified. This is needed because a FULL-declaring $`B`$ is *rejected* at `on_block` by any honest node lacking $`B'`$'s payload, so without uniform local verification (plus the admission retry) the honest slot-$`N`$ vote can split off $`B`$ and reorg it.
   **Clause (b) — $`B`$ declares $`B'`$ EMPTY** (no parent-FULL assertion fires, so admission is unconditional): no online honest node holds, by $`T_{\mathrm{att}}`$, both a locally verified copy of $`B'`$'s payload and PTC True-timeliness and True-DA quorums for $`B'`$ — equivalently, no online honest node's slot-$`N`$ tiebreaker resolves $`(B', \mathrm{FULL})`$. This is needed because once the boosted EMPTY-declaring $`B`$ is in the store, `should_extend_payload`'s three proposer fallbacks are all dead for $`B'`$ (boost is non-empty, its parent is $`B'`$, and it declares EMPTY) and the PTC primary path (locally verified payload + both True quorums; §6) is the only remaining route to FULL. Without clause (b), a *declaration mismatch* can orphan an honestly constructed $`B`$ with no adversary at all: a slot-$`(N{-}1)`$ payload revealed before `get_payload_due_ms()` and verified at most honest nodes — but not at the slot-$`N`$ proposer by bid-selection time, so the proposer honestly declares EMPTY via `should_build_on_full` — makes every verified node resolve $`(B', \mathrm{FULL})`$ at $`T_{\mathrm{att}}`$ and vote off $`B`$'s branch. (This is the proposer-side twin of the declaration mismatch that P_withhold's Case 0a handles for the builder via **L_head**'s coincidence clause.)
   **S1** supplies envelope *delivery* — under honest gossip relay, $`B'`$'s payload reaches every honest node within $`\Delta`$ once any honest node holds it (in P_can that holder is the honest slot-$`N`$ proposer, which must locally hold $`B'`$'s payload to declare it FULL; in P_rev, where the slot-$`N`$ proposer may be Byzantine, it is the slot-$`(N{-}1)`$ builder's reveal of $`B'`$'s payload); **L_parent** supplies the local DA/EL *completion*, the admission *retry*, and clause (b)'s resolution agreement, none of which delivery alone provides. This is the parent-payload analogue of **L_verify**, applied to the parent payload before the slot-$`N`$ vote rather than to $`B`$'s payload before the successor decision; both P_can and P_rev (trustless) need it for an identical reason — seating $`B`$ as every online honest node's head candidate at the slot-$`N`$ vote.
-- **(L_withdraw) Withdrawal-pipeline liveness (lifecycle-liveness family; P_pay).** Canonical FULL blocks with accepted execution payloads keep being produced: `process_withdrawals` runs its withdrawal stages only in a block whose predecessor's payload was applied (it returns early otherwise), so without an ongoing supply of such blocks every withdrawal queue and sweep freezes. In P_pay, one further clause is used: after a `BuilderPendingWithdrawal` is queued, such blocks continue often enough to drain the builder-pending-withdrawal queue. (No spare-capacity clause is needed: `builder_pending_withdrawals` is an unbounded `ProgressiveList` (EIP-7688), so settlement appends cannot fail for capacity reasons.) The block that drains the entry also has its execution payload accepted by the EL, so the `Withdrawal` emitted for the proposer's `fee_recipient` is actually credited on the execution layer.
+- **(L_withdraw) Withdrawal-pipeline liveness (P_exit_validator, P_exit_builder; P_pay).** Canonical FULL blocks with accepted execution payloads keep being produced: `process_withdrawals` runs its withdrawal stages only in a block whose predecessor's payload was applied (it returns early otherwise), so without an ongoing supply of such blocks every withdrawal queue and sweep freezes. In P_pay, one further clause is used: after a `BuilderPendingWithdrawal` is queued, such blocks continue often enough to drain the builder-pending-withdrawal queue. (No spare-capacity clause is needed: `builder_pending_withdrawals` is an unbounded `ProgressiveList` (EIP-7688), so settlement appends cannot fail for capacity reasons.) The block that drains the entry also has its execution payload accepted by the EL, so the `Withdrawal` emitted for the proposer's `fee_recipient` is actually credited on the execution layer.
 - **(L_payment_drain) Builder-sweep budget non-starvation (P_exit_builder).** Infinitely often, a canonical FULL block reaches the builder sweep with a strictly positive budget: the two stages that run before `get_builders_sweep_withdrawals` in `get_expected_withdrawals` — the builder-payment stage `get_builder_withdrawals` and the pending-partial stage `get_pending_partial_withdrawals` — jointly contribute fewer than `MAX_WITHDRAWALS_PER_PAYLOAD - 1` withdrawals in that block. This is required because the builder sweep has **no reserved slot**: each earlier stage caps the *running total* at `MAX_WITHDRAWALS_PER_PAYLOAD - 1`, so whenever the two of them jointly reach that cap the sweep scans zero builders and `state.next_withdrawal_builder_index` does not move; were that to happen in every FULL block forever, exited builders would never be paid. The condition is about the **combined** occupancy of both earlier stages, not the payment queue alone — a payment-arrival rate below the payout ceiling does *not* by itself guarantee sweep budget, because the pending-partial stage (capped at `MAX_PENDING_PARTIALS_PER_WITHDRAWALS_SWEEP` = 8 per block) shares the same budget. It is plausible under normal operation: settled payments enter the queue at most one per block via Path A plus at most `SLOTS_PER_EPOCH` per epoch boundary via Path B (§7), so when FULL blocks arrive at a rate comparable to bidding slots the two stages jointly sit well below the 15-entry ceiling; sustained saturation requires *both* a persistent partial-withdrawal backlog *and* a payment-settlement rate near the ceiling, the latter only possible when FULL blocks are much rarer than settled bids. The validator sweep needs no analogue — it is structurally reserved a slot (see the P_exit_validator proof).
 - **(L_finality) Finality progress (P_join_builder).** The chain keeps finalizing: for every epoch $`e`$, the canonical `state.finalized_checkpoint.epoch` eventually exceeds $`e`$. Required because builder activation is gated on the registration's placement being finalized — `is_active_builder` requires `builder.deposit_epoch < state.finalized_checkpoint.epoch` — so block production alone (**L_withdraw**) is not enough: a chain that stays live but stops finalizing admits registrations that never activate. This is the standard finality-liveness assumption (sustained ≥ 2/3 honest-online participation), strictly stronger than **L_withdraw**'s block-production clause.
 - **(L_verify) Payload-processing liveness.** In P_rev, after an honest builder reveals a valid payload and blob sidecars within A1a/A1b's reveal-time-safety window, online honest PTC members complete the local payload/blob observations needed for their True/True Phase 4 vote before the PTC deadline. Also, the honest nodes needed for the first canonical successor decision complete `on_execution_payload_envelope` for the parent block before that successor is proposed or voted on. The latter includes both `is_data_available` and `verify_execution_payload_envelope`, so `store.payloads[B.root]` is populated in time. **S1** supplies network delivery; **L_verify** supplies the local payload/DA/EL processing bound.
@@ -1602,7 +1620,7 @@ def get_pending_balance_to_withdraw_for_builder(
 ```python
 def process_execution_payload_bid(
     state: BeaconState, signed_bid: SignedExecutionPayloadBid
-) -> None:
+) -> Slot:
     bid = signed_bid.message
     builder_index = bid.builder_index
     amount = bid.value
@@ -1632,7 +1650,9 @@ def process_execution_payload_bid(
                 fee_recipient=bid.fee_recipient),     # P_pay destination
             proposer_index=get_beacon_proposer_index(state))  # the slot's proposer, used by G-Slashing
 
+    parent_slot = state.latest_execution_payload_bid.slot   # returned for the attestation payload-availability lookup; not relied on by any G-lemma
     state.latest_execution_payload_bid = bid
+    return parent_slot
 ```
 
 </details>
@@ -1645,9 +1665,14 @@ def process_execution_payload_bid(
 <summary><b>Pseudocode definition</b> (click to expand)</summary>
 
 ```python
-def process_attestation(state: BeaconState, attestation: Attestation) -> None:
+def process_attestation(state: BeaconState, attestation: Attestation, parent_slot: Slot) -> None:
     data = attestation.data
     # ... validate attestation, compute participation flags, and select epoch participation ...
+    # parent_slot is used only inside get_attestation_participation_flag_indices, to look up
+    # the attested block's payload availability at the parent slot (the fix for skipped-slot
+    # data.index=1 attestations). It feeds the non-same-slot participation branch ONLY;
+    # same-slot attestations set payload_matches unconditionally, so parent_slot never
+    # affects the (b) is_attestation_same_slot payment-weight path below.
 
     if data.target.epoch == get_current_epoch(state):
         payment_index = SLOTS_PER_EPOCH + data.slot % SLOTS_PER_EPOCH
@@ -1882,7 +1907,7 @@ Neither of these places an execution deadline on slot-$`N`$ honest actors: (1) i
 
 **Lifecycle-liveness family (P_exit_validator, P_exit_builder, P_join_builder) — Category A.**
 
-These are *eventual-liveness* claims. All assume **L_withdraw** (canonical FULL blocks with accepted payloads keep being produced, so `process_withdrawals` keeps draining the sweep). The two exit properties share the following lemma.
+These are *eventual-liveness* claims. The two exit properties assume **L_withdraw** (canonical FULL blocks with accepted payloads keep being produced, so `process_withdrawals` keeps draining the sweep) and share the following lemma; P_join_builder instead assumes **L_finality** plus a FULL-carriage premise on the registration itself.
 
 *Lemma (sweep progress).* Under **L_withdraw**, each withdrawal-sweep pointer advances so that every eligible entry is eventually served.
 
@@ -1897,9 +1922,9 @@ These are *eventual-liveness* claims. All assume **L_withdraw** (canonical FULL 
 
 *Proof.* `get_builders_sweep_withdrawals` sweeps a builder when `builder.withdrawable_epoch <= get_current_epoch(state) and builder.balance > 0`, appending a `Withdrawal` for the full `balance`; `apply_withdrawals` debits it (saturating at zero) and the accepted payload credits `execution_address`. Eligibility persists until the sweep arrives. The exit gate (`process_builder_exit_request`) required zero pending obligations across both queues (`get_pending_balance_to_withdraw_for_builder`), and no *new* bid can create one afterwards: `process_execution_payload_bid` asserts `is_active_builder`, false from the moment `initiate_builder_exit` sets `withdrawable_epoch`. Deposits only increase the balance (and a top-up re-arms `withdrawable_epoch` only when the balance is already zero — at which point there is no remaining balance for this claim to be about). One corner remains: a bid made *while active*, whose pending-payment entry aged out of `builder_pending_payments` unsettled, can still attach a `BuilderPendingWithdrawal` **after** the gate, via the Path C old-parent branch of `apply_parent_execution_payload` — which processes exit requests *before* its settlement step, so the gate cannot see it. That obligation does not threaten the claim: it charges a pre-exit bid that `can_builder_cover_bid` fully collateralized at admission, so the builder's *remaining* balance — net of everything it genuinely owes — is preserved for the sweep (and if the obligation consumes the whole balance, the remainder is zero and the claim is vacuous). By the lemma (builder sweep), under **L_payment_drain** the builder pointer advances infinitely often and eventually reaches it. **L_payment_drain** is load-bearing here precisely because the builder sweep — unlike the validator sweep — has no reserved slot; §7 argues an adversary cannot cheaply sustain the shared-budget saturation that would violate it. *Spec note:* the Path C corner means "exited ⟹ no pending obligations" is **not** a state invariant the spec maintains — benign for this property, but a subtlety worth flagging upstream. *Assumptions used:* **L_withdraw**, **L_payment_drain**.
 
-**P_join_builder: Builder registration liveness.** *Claim:* under **L_withdraw** and **L_finality**, a valid builder registration — a `BuilderDepositRequest` whose pubkey is not already in the builder registry, with a valid deposit signature, builder-withdrawal credentials, and an amount above the `can_builder_cover_bid` floor (§2) — eventually yields a registered builder that becomes active and able to bid.
+**P_join_builder: Builder registration liveness.** *Claim:* under **L_finality**, a valid builder registration — a `BuilderDepositRequest` carried in an execution payload whose block is declared FULL on the canonical chain, whose pubkey is not already in the builder registry, with a valid deposit signature, builder-withdrawal credentials, and an amount above the `can_builder_cover_bid` floor (§2) — eventually yields a registered builder that becomes active and able to bid.
 
-*Proof.* The request rides in an execution payload; when a canonical block declares that payload's block FULL — guaranteed eventually by **L_withdraw** — `apply_parent_execution_payload` calls `process_builder_deposit_request`, which ignores any request whose `withdrawal_credentials` lack the builder prefix (`is_builder_withdrawal_credential`) and, for a fresh pubkey with a valid deposit signature, calls `add_builder_to_registry` — writing a `Builder` with the deposited `balance`, `version` forced to `PAYLOAD_BUILDER_VERSION`, `deposit_epoch` set to the processing epoch, and `withdrawable_epoch = FAR_FUTURE_EPOCH`. The entry then persists: builder indices *are* reusable — `get_index_for_new_builder` may hand a later registration the slot of an old builder — but only a slot that is exited **and** already swept (`withdrawable_epoch <= get_current_epoch(state) and builder.balance == 0`) qualifies for reuse, so a live entry with `withdrawable_epoch = FAR_FUTURE_EPOCH` is never overwritten, and only the builder's own exit request (`process_builder_exit_request` → `initiate_builder_exit`) changes that field. Activation is gated on finality, not mere inclusion: `is_active_builder` requires `builder.deposit_epoch < state.finalized_checkpoint.epoch`, which **L_finality** eventually supplies. Once active, with `version == PAYLOAD_BUILDER_VERSION` (which `process_execution_payload_bid` asserts) and `balance` above the floor checked by `can_builder_cover_bid` (§2), the builder's bids are admitted by `process_execution_payload_bid`. The pubkey-freshness premise is load-bearing: a deposit whose pubkey already appears in the registry is treated as a top-up of that entry, and an exited builder is never reactivated — the top-up branch re-arms `withdrawable_epoch`, never restores `FAR_FUTURE_EPOCH` — so a registration reusing an exited builder's pubkey funds the old entry's `execution_address` instead of activating anything. *Assumptions used:* **L_withdraw** (inclusion via the FULL flow), **L_finality** (activation).
+*Proof.* The request rides in an execution payload; by the FULL-carriage premise, a canonical block declares that payload's block FULL. (This clause is a premise, not a consequence of any liveness assumption: **L_withdraw** guarantees a continuing *supply* of canonical FULL blocks, never that *this* payload's block is among them — a request whose payload resolves EMPTY is never processed, since `process_parent_execution_payload`'s EMPTY branch returns without touching the requests, and re-submitting the underlying deposit transaction is an execution-layer matter outside this document's model.) When that FULL-declaring block is processed, `apply_parent_execution_payload` calls `process_builder_deposit_request`, which ignores any request whose `withdrawal_credentials` lack the builder prefix (`is_builder_withdrawal_credential`) and, for a fresh pubkey with a valid deposit signature, calls `add_builder_to_registry` — writing a `Builder` with the deposited `balance`, `version` forced to `PAYLOAD_BUILDER_VERSION`, `deposit_epoch` set to the processing epoch, and `withdrawable_epoch = FAR_FUTURE_EPOCH`. The entry then persists: builder indices *are* reusable — `get_index_for_new_builder` may hand a later registration the slot of an old builder — but only a slot that is exited **and** already swept (`withdrawable_epoch <= get_current_epoch(state) and builder.balance == 0`) qualifies for reuse, so a live entry with `withdrawable_epoch = FAR_FUTURE_EPOCH` is never overwritten, and only the builder's own exit request (`process_builder_exit_request` → `initiate_builder_exit`) changes that field. Activation is gated on finality, not mere inclusion: `is_active_builder` requires `builder.deposit_epoch < state.finalized_checkpoint.epoch`, which **L_finality** eventually supplies. Once active, with `version == PAYLOAD_BUILDER_VERSION` (which `process_execution_payload_bid` asserts) and `balance` above the floor checked by `can_builder_cover_bid` (§2), the builder's bids are admitted by `process_execution_payload_bid`. The pubkey-freshness premise is load-bearing: a deposit whose pubkey already appears in the registry is treated as a top-up of that entry, and an exited builder is never reactivated — the top-up branch re-arms `withdrawable_epoch`, never restores `FAR_FUTURE_EPOCH` — so a registration reusing an exited builder's pubkey funds the old entry's `execution_address` instead of activating anything. *Assumptions used:* the FULL-carriage premise (inclusion), **L_finality** (activation).
 
 ---
 
@@ -2039,7 +2064,7 @@ The proposer's `fee_recipient` is thus queued exactly once (Parts 1, 3) and even
 
 ## Appendix A — Proofs of the algorithmic assumptions (G-lemmas)
 
-> **TL;DR.** Each §9.2 G-assumption is a factual claim about what one spec function does. This appendix promotes them to **lemmas** proved against the Gloas spec at commit `e656e15e1`. A G-lemma proof has four obligations: **trigger** (every named precondition is checked, with the right kind of check), **effect** (the precise mutation and magnitude), **frame** (no *other* spec path produces the effect — every spec function that writes the governed field is enumerated and shown harmless), and **minimality** (the lemma claims nothing the function does not do). The frame obligation is the load-bearing one: it is the clause every §9 proof silently relies on. Minimality is the lightest — less a separate fact about the spec than a check that the lemma's statement is no stronger than its own trigger/effect proof; in practice its payoff is surfacing edge cases and cross-lemma dependencies (the genesis-slot case in Lemma A.3, the amount-guard entanglement in Lemma A.4), not catching over-claims, which a tightly-stated lemma precludes by construction.
+> **TL;DR.** Each §9.2 G-assumption is a factual claim about what one spec function does. This appendix promotes them to **lemmas** proved against the Gloas spec at commit `5366cb59e`. A G-lemma proof has four obligations: **trigger** (every named precondition is checked, with the right kind of check), **effect** (the precise mutation and magnitude), **frame** (no *other* spec path produces the effect — every spec function that writes the governed field is enumerated and shown harmless), and **minimality** (the lemma claims nothing the function does not do). The frame obligation is the load-bearing one: it is the clause every §9 proof silently relies on. Minimality is the lightest — less a separate fact about the spec than a check that the lemma's statement is no stronger than its own trigger/effect proof; in practice its payoff is surfacing edge cases and cross-lemma dependencies (the genesis-slot case in Lemma A.3, the amount-guard entanglement in Lemma A.4), not catching over-claims, which a tightly-stated lemma precludes by construction.
 
 **How to read each lemma.** Every entry below is stated against two anchors, named in bold at its head:
 
