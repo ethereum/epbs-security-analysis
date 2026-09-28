@@ -8,7 +8,7 @@ This document is a security analysis of ePBS. We walk through the protocol's lif
 
 **Who should read this.** Anyone who wants a rigorous but readable account of how ePBS works: what changed from pre-ePBS, why, and what guarantees the protocol provides. We assume familiarity with Ethereum's consensus layer (Gasper, LMD-GHOST, FFG, attestation committees, fork choice). We do not assume prior knowledge of EIP-7732.
 
-**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`818bbed72`](https://github.com/ethereum/consensus-specs/commit/818bbed729b9e3a7c29d9ac9c91130862eac54d5), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/818bbed729b9e3a7c29d9ac9c91130862eac54d5/specs/gloas); inline spec-file references are to that commit. The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
+**Spec version.** This document targets [`ethereum/consensus-specs`](https://github.com/ethereum/consensus-specs) at commit [`caa9c8e80`](https://github.com/ethereum/consensus-specs/commit/caa9c8e804efb6ab43cddc7d536e1172f5e1ed87), Gloas fork: [`specs/gloas/`](https://github.com/ethereum/consensus-specs/tree/caa9c8e804efb6ab43cddc7d536e1172f5e1ed87/specs/gloas); inline spec-file references are to that commit. The Gloas specs are work-in-progress and may differ from the EIP-7732 draft summary.
 
 **Notation.** Code blocks use Python syntax at an abstracted level. An `...` in arguments or fields means "additional fields omitted for brevity." One convention is worth knowing upfront; the rest are reference material in the expandable table below.
 
@@ -41,7 +41,7 @@ Every name below is a pedagogical helper, not a spec function. Each one abstract
 - **`slot(B)`, `parent(B)`, `state(B)`** — "the slot of block B", "the parent block of B", "the post-state of B"; i.e., `B.slot`, `store.blocks[B.parent_root]`, and `store.block_states[hash_tree_root(B)]` respectively.
 - **`bid(B)`, `head(chain)`, `child(chain, B)`** — "the bid carried by block B", i.e., `B.body.signed_execution_payload_bid.message` (so `bid(B).block_hash`, `bid(B).parent_block_hash`, etc. are the corresponding fields of the `ExecutionPayloadBid` SSZ container). `head(chain)` is the head block of a canonical chain (the latest block in the sequence). `child(chain, B)` is B's unique canonical child on `chain` (the block whose `parent_root` equals B's hash-tree root); defined formally in §3.
 - **`block_status(chain, B)`, `parentStatus(B)`** — `block_status(chain, B)` is the FULL / EMPTY / undefined classifier defined in §3. `parentStatus(B)` is shorthand for "B's bid declares its parent as FULL or EMPTY": FULL if `bid(B).parent_block_hash == bid(parent(B)).block_hash`, EMPTY otherwise. Used in §8 / §9 to refer to a block's *declared* view of its parent.
-- **`active_validators(store)`, `latest_message(v)`, `effective_balance(v)`, `child_blocks_of(blocks, r)`** — Pedagogical helpers in the §6 fork-choice machinery and §9 G-assumption definitions; abbreviate `get_active_validator_indices(state, get_current_epoch(state))`, `store.latest_messages[v]`, `state.validators[v].effective_balance`, and the children-of-`r` filter (over the filtered block tree `blocks`) that `get_node_children` (`fork-choice.md`) applies, respectively.
+- **`active_validators(store)`, `latest_message(v)`, `effective_balance(v)`, `child_blocks_of(store, r)`** — Pedagogical helpers in the §6 fork-choice machinery and §9 G-assumption definitions; abbreviate `get_active_validator_indices(state, get_current_epoch(state))`, `store.latest_messages[v]`, `state.validators[v].effective_balance`, and the children-of-`r` filter (over `store.blocks`) that `get_node_children` (`fork-choice.md`) applies, respectively.
 - **`epoch(N)`** — The epoch containing slot $N$, equal to `compute_epoch_at_slot(N) = N // SLOTS_PER_EPOCH`. We write $`\mathsf{epoch}(N)`$ in math notation and `epoch(N)` in prose.
 - **"$`B'`$ will remain canonical forever"** — The strengthening canonicity precondition embedded in P_can, P_rev (trustless case), P_withhold (trustless case), and P_pay's statements (§4), where $`B'`$ is the canonical block at slot $`N{-}1`$. Rules out a configuration where a Byzantine slot-$`N`$ proposer publishes $`B`$ late and fragments honest votes between $`B`$'s branch and a competing branch under an older common ancestor, causing parent($`B`$) to lose canonicity. **Read operationally, not only extensionally:** the clause fixes the *configuration*, not merely the outcome — besides $`B'`$ staying canonical at every later time, no branch conflicting with $`B'`$ attracts online honest slot-$`N`$ attestation weight (equivalently, at $`T_{\mathrm{att}}`$ of slot $`N`$ every online honest validator's local head descends from $`B'`$). The proofs use this containment form where they keep honest slot-$`N`$ votes inside $`B'`$'s subtree (P_can's attestation step, inherited by P_pay; P_rev trustless, the *$`B`$ extends $`B'`$* derivation); P_withhold (trustless) needs only the outcome reading (its Preliminary routes through **L_head**). The §4 fold-out explains why the two readings are expected to coincide under S1 + S2. The companion missing-slot configuration (a colluding slot-$`N{-}1`$ / slot-$`N`$ Byzantine pair exploiting a missing intervening slot) is excluded automatically: $`B'`$'s existence at slot $`N{-}1`$ leaves no missing slot to exploit. The fact that $`B`$ extends $`B'`$ is derived from the other hypotheses in each property (automatic for an honest proposer in P_can/P_pay; derived from A1a (ii) plus $`B'`$'s canonicity in P_rev trustless; an explicit precondition in P_withhold trustless, where A1a (ii) may fail and so cannot supply it). P_rev's non-trustless case substitutes the confirmation rule's $`\Sigma_R`$ (§5 Phase 3 A1b) for this hypothesis. Not a spec function; see §4 for full motivation and open work to weaken it.
 
@@ -49,7 +49,7 @@ Every name below is a pedagogical helper, not a spec function. Each one abstract
 
 - **`T_att`, `T_ptc`, `T_payload_due`, `Delta`** — Wall-clock constants and the synchrony bound. `T_att = get_attestation_due_ms() = ATTESTATION_DUE_BPS_GLOAS · SLOT_DURATION_MS / 10000` (currently 25% = 3000 ms = 3 s). `T_payload_due = get_payload_due_ms()` (currently 50% = 6000 ms = 6 s) and `T_ptc = get_payload_attestation_due_ms()` (currently 75% = 9000 ms = 9 s). `SLOT_DURATION_MS` is the spec constant for slot duration in milliseconds (`phase0/fork-choice.md`); the `*_BPS` basis-point constants are in `validator.md` and the `get_*_due_ms()` accessors in `fork-choice.md`. `Delta` is the synchrony delay $\Delta$ from S1 (an external network bound, not a spec constant).
 - **`W`** — The spec's per-slot balance denominator, `get_total_active_balance(state) // SLOTS_PER_EPOCH`. This is the denominator used by proposer boost and `get_builder_payment_quorum_threshold`. When the proofs speak about 40% / 60% / 80% of a slot's weight, **S2** supplies the committee-regularity and online-participation link between actual same-slot attesting weight and this spec denominator.
-- **`time_in_slot()`** — The wall-clock offset within the current slot at the calling node, i.e. `compute_time_at_slot(state, ...)`-derived; used by the builder's reveal-time check. Client-scheduler primitive.
+- **`time_in_slot()`** — The wall-clock offset within the current slot at the calling node; the spec counterpart is `get_time_into_slot_ms(store)` (phase0 `fork-choice.md`); used by the builder's reveal-time check. Client-scheduler primitive.
 - **`real_attestation_weight(store, B)`** — Sum of effective balances of validators with a real (validator-cast) `Attestation` for `B` in `store`, *excluding* the synthetic proposer-boost vote. Builder-side observation derived from `store.latest_messages` plus the slot's `Attestation` queue.
 - **`equivocation_visible(store, proposer_index, slot)`** — Returns True iff `store` contains two distinct `SignedBeaconBlockHeader`s for `(proposer_index, slot)` (i.e., evidence sufficient for a `ProposerSlashing`). Builder-side observation.
 - **`R_confirms(rule, store, B)`** — The confirmation predicate of an external rule $R$ applied to $B$ at the calling node's view (A1b only); parametric — see §5 Phase 3.
@@ -100,7 +100,7 @@ ePBS introduces one new actor and modifies the role of existing ones.
 **PTC member** — *new role for existing validators*. A subcommittee of 512 ballot positions per slot, sampled from the slot's regular attestation committees by effective balance (a high-balance validator may occupy multiple positions; the >256-True threshold counts ballot positions, not distinct validators). Key properties:
 
 - **PTC members are themselves attesters for the slot.** Every PTC member also belongs to one of the slot's attestation committees and casts the standard same-slot attestation at $T_{\mathrm{att}}$ in addition to the PTC witness statement at $T_{\mathrm{ptc}}$. Throughout this document and in the figures we draw the PTC as a separate column from Attesters. This is a *pedagogical* separation, not a mechanical one, isolating the witness-statement duty (a binary observation about payload arrival) from the head-vote duty (which drives fork-choice weight).
-- **Distinct duty.** The PTC casts a **payload timeliness attestation** at 75% of the slot, reporting two independent signals: `payload_present` (whether the member observed the `SignedExecutionPayloadEnvelope` arrive) and `blob_data_available` (whether the member's sampled blob data columns arrived and passed KZG verification). Both are binary observations, never validity judgments. The spec object is a `PayloadAttestationMessage` ([`beacon-chain.md`](https://github.com/ethereum/consensus-specs/blob/818bbed729b9e3a7c29d9ac9c91130862eac54d5/specs/gloas/beacon-chain.md)); we follow the PBS literature and use the shorthand **witness statement** (or **witness vote**), since the PTC is *witnessing* payload and blob-data arrival, not judging execution validity. Phase 4 (§5) details the two-signal mechanics.
+- **Distinct duty.** The PTC casts a **payload timeliness attestation** at 75% of the slot, reporting two independent signals: `payload_present` (whether the member observed the `SignedExecutionPayloadEnvelope` arrive) and `blob_data_available` (whether the member's sampled blob data columns arrived and passed KZG verification). Both are binary observations, never validity judgments. The spec object is a `PayloadAttestationMessage` ([`beacon-chain.md`](https://github.com/ethereum/consensus-specs/blob/caa9c8e804efb6ab43cddc7d536e1172f5e1ed87/specs/gloas/beacon-chain.md)); we follow the PBS literature and use the shorthand **witness statement** (or **witness vote**), since the PTC is *witnessing* payload and blob-data arrival, not judging execution validity. Phase 4 (§5) details the two-signal mechanics.
 - **Observation, not validation.** PTC members run `on_execution_payload_envelope` as part of normal node operation, but payload validity is *not* a precondition for the PTC vote. The vote is conditioned solely on payload observation.
 
 ---
@@ -285,7 +285,7 @@ This is the foundation of Property P_DA (Data availability for chain inclusion) 
 
 > **TL;DR.** A bid carries two distinct payment fields: `value` (trustless: the protocol settles it via the unconditional-payment mechanism) and `execution_payment` (non-trustless: an advertised promise the protocol does not enforce). The public bid gossip topic rejects non-zero `execution_payment`; bids with non-zero `execution_payment` must travel through some off-protocol channel. Properties in §4 split along this divide: some hold regardless of which field a builder uses, others apply only when one of the two is set.
 
-We've referred to "the builder's bid" loosely; we now make the object concrete. The bid is the `ExecutionPayloadBid` SSZ container, wrapped in `SignedExecutionPayloadBid` for transport. Spec source: [`beacon-chain.md`](https://github.com/ethereum/consensus-specs/blob/818bbed729b9e3a7c29d9ac9c91130862eac54d5/specs/gloas/beacon-chain.md) §`ExecutionPayloadBid`. The fields:
+We've referred to "the builder's bid" loosely; we now make the object concrete. The bid is the `ExecutionPayloadBid` SSZ container, wrapped in `SignedExecutionPayloadBid` for transport. Spec source: [`beacon-chain.md`](https://github.com/ethereum/consensus-specs/blob/caa9c8e804efb6ab43cddc7d536e1172f5e1ed87/specs/gloas/beacon-chain.md) §`ExecutionPayloadBid`. The fields:
 
 ```python
 class ExecutionPayloadBid(Container):
@@ -757,7 +757,7 @@ The builder's **payment** is not settled at this point. It is settled later, whe
 
 #### Cautious-reveal protocols an honest builder can follow
 
-The spec prescribes only the minimal honest rule: reveal when the block is timely and is the head of the local chain ([`builder.md`](https://github.com/ethereum/consensus-specs/blob/818bbed729b9e3a7c29d9ac9c91130862eac54d5/specs/gloas/builder.md)). The §4 property statements (P_rev, P_withhold) reference *cautious-reveal protocols* that strengthen this minimum. Two protocols, one per case; an honest builder picks the one that matches their bid's payment field:
+The spec prescribes only the minimal honest rule: reveal when the block is timely and is the head of the local chain ([`builder.md`](https://github.com/ethereum/consensus-specs/blob/caa9c8e804efb6ab43cddc7d536e1172f5e1ed87/specs/gloas/builder.md)). The §4 property statements (P_rev, P_withhold) reference *cautious-reveal protocols* that strengthen this minimum. Two protocols, one per case; an honest builder picks the one that matches their bid's payment field:
 
 **Protocol A1a — trustless cautious-reveal (`bid.value > 0`).** Reveal only when all three conditions hold: (i) $T_{\mathrm{att}} + \Delta \leq t_{\mathrm{rev}} < T_{\mathrm{payload\_due}} - \Delta$ — a lower bound (the cautious-reveal floor, used to close the equivocation window) and an upper bound (network reveal-timing safety: the envelope reaches every honest PTC member before `get_payload_due_ms()` under **S1**; **L_verify** supplies the separate local payload/DA/EL processing liveness needed by P_rev); (ii) at least `PROPOSER_SCORE_BOOST` = 40% of $W$ in real attestations supporting the block; (iii) no proposer equivocation by `block.proposer_index` for `block.slot` is visible. The lower bound on (i) ensures any equivocation $B''$ broadcast at $t_{\mathrm{eq}} \leq T_{\mathrm{att}}$ is delivered to the builder by $t_{\mathrm{rev}}$ (S1), so (iii) sees it. The upper bound is the analogue of **A1b**'s reveal-timing-safety condition.
 
@@ -837,7 +837,7 @@ def reveal_payload(builder, block, ...):
 
 *Figure 7: Phase 4 (t = 75%), PTC witness-vote deadline. Each of the 512 PTC members runs `Check payload arrival` and broadcasts a vote carrying two independent signals: `payload_present` and `blob_data_available` (decision tree on the right). The vote is a binary observation, not a validity judgment (the Phase 4 `ptc_vote` code never calls the execution engine); the PTC primary path inside the slot-N+1 chain-inclusion check `should_extend_payload` (described in Phase 5) requires majority support on **both** signals.*
 
-An honest PTC member's slot-level duty consists of three handlers that fire on independent triggers: `on_block` (when the beacon block arrives), `on_execution_payload_envelope` (when the payload arrives, if it does), and `ptc_vote` (at $`T_{\mathrm{ptc}}`$). The first two are common to all nodes; every node processes blocks and payloads the same way. The third is PTC-specific. Below we focus on `ptc_vote`. The handler corresponds to the spec handler in [`validator.md`](https://github.com/ethereum/consensus-specs/blob/818bbed729b9e3a7c29d9ac9c91130862eac54d5/specs/gloas/validator.md) ("Constructing a payload attestation message"). The four lookup helpers (`has_beacon_block_for_slot`, `get_beacon_block_root_for_slot`, `has_execution_payload_envelope`, `check_blob_data`) are pedagogical names for the corresponding inline checks in the spec prose (the spec uses `is_data_available` for the blob-data check; the others are described in prose rather than as named helpers):
+An honest PTC member's slot-level duty consists of three handlers that fire on independent triggers: `on_block` (when the beacon block arrives), `on_execution_payload_envelope` (when the payload arrives, if it does), and `ptc_vote` (at $`T_{\mathrm{ptc}}`$). The first two are common to all nodes; every node processes blocks and payloads the same way. The third is PTC-specific. Below we focus on `ptc_vote`. The handler corresponds to the spec handler in [`validator.md`](https://github.com/ethereum/consensus-specs/blob/caa9c8e804efb6ab43cddc7d536e1172f5e1ed87/specs/gloas/validator.md) ("Constructing a payload attestation message"). The four lookup helpers (`has_beacon_block_for_slot`, `get_beacon_block_root_for_slot`, `has_execution_payload_envelope`, `check_blob_data`) are pedagogical names for the corresponding inline checks in the spec prose (the spec uses `is_data_available` for the blob-data check; the others are described in prose rather than as named helpers):
 
 ```python
 @Upon(time_in_slot == T_ptc and validator.index in get_ptc(state, slot))
@@ -940,8 +940,16 @@ graph TD
 
 ```python
 def get_head(store: Store) -> ForkChoiceNode:
-    # Get filtered block tree that only includes viable branches
-    blocks = get_filtered_block_tree(store)
+    # Get filtered node tree that only includes viable branches
+    nodes = get_filtered_node_tree(store)
+
+    # Return empty node if there are no viable nodes
+    if not any(nodes):
+        return ForkChoiceNode(
+            root=store.justified_checkpoint.root,
+            payload_status=PAYLOAD_STATUS_EMPTY,
+        )
+
     # Execute the LMD-GHOST fork-choice
     head = ForkChoiceNode(
         root=store.justified_checkpoint.root,
@@ -949,7 +957,7 @@ def get_head(store: Store) -> ForkChoiceNode:
     )
 
     while True:
-        children = get_node_children(store, blocks, head)
+        children = [child for child in get_node_children(store, head) if child in nodes]
         if len(children) == 0:
             return head
         # Sort by latest attesting balance with ties broken lexicographically
@@ -962,6 +970,8 @@ def get_head(store: Store) -> ForkChoiceNode:
             ),
         )
 ```
+
+**Viability is filtered per node, and the head is never PENDING.** `get_filtered_node_tree` prunes branches whose leaf state's justified/finalized info disagrees with the store's (phase0 `filter_node_tree`, recursing through the same `get_node_children`); the walk descends only into children in that viable set. If no viable node exists at all, `get_head` returns the justified checkpoint's EMPTY node — so the returned head always carries a resolved payload status (`should_build_on_full`'s `assert head.payload_status != PAYLOAD_STATUS_PENDING` holds by construction). Under the operating context of §9's proofs (the relevant branch descends from the justified checkpoint with agreeing justified/finalized info), the viability filter is inert: every node the proofs' walks visit is in the viable set.
 
 **`get_head` picks the child with the highest value of a three-key sort.** First `get_weight` (attestation weight), then block root (lexicographic, for determinism), then **the payload-status tiebreaker**: a PTC-based priority function that matters only when the first two keys tie. Internally, `get_payload_status_tiebreaker` consults `should_extend_payload` only for FULL/EMPTY payload-decision nodes whose block is exactly one slot behind the current slot.
 
@@ -1084,9 +1094,7 @@ In the rows where a malicious successor "declares EMPTY" forces EMPTY, that succ
 **`get_node_children`.** Returns `{(r, EMPTY), (r, FULL)}` for a PENDING input (with the FULL child present only if `is_payload_verified(store, r)` is true) and only `(r', PENDING)` nodes for a FULL/EMPTY input. Consequently, `(r, FULL)` is reachable in the tree only as a child of `(r, PENDING)`.
 
 ```python
-def get_node_children(
-    store: Store, blocks: Dict[Root, BeaconBlock], node: ForkChoiceNode
-) -> Sequence[ForkChoiceNode]:
+def get_node_children(store: Store, node: ForkChoiceNode) -> Sequence[ForkChoiceNode]:
     if node.payload_status == PAYLOAD_STATUS_PENDING:
         children = [ForkChoiceNode(root=node.root, payload_status=PAYLOAD_STATUS_EMPTY)]
         if is_payload_verified(store, node.root):
@@ -1095,10 +1103,10 @@ def get_node_children(
     else:
         return [
             ForkChoiceNode(root=root, payload_status=PAYLOAD_STATUS_PENDING)
-            for root in blocks
+            for root in store.blocks
             if (
-                blocks[root].parent_root == node.root
-                and node.payload_status == get_parent_payload_status(store, blocks[root])
+                store.blocks[root].parent_root == node.root
+                and node.payload_status == get_parent_payload_status(store, store.blocks[root])
             )
         ]
 ```
@@ -2072,7 +2080,7 @@ The proposer's `fee_recipient` is thus queued exactly once (Parts 1, 3) and even
 
 ## Appendix A — Proofs of the algorithmic assumptions (G-lemmas)
 
-> **TL;DR.** Each §9.2 G-assumption is a factual claim about what one spec function does. This appendix promotes them to **lemmas** proved against the Gloas spec at commit `818bbed72`. A G-lemma proof has four obligations: **trigger** (every named precondition is checked, with the right kind of check), **effect** (the precise mutation and magnitude), **frame** (no *other* spec path produces the effect — every spec function that writes the governed field is enumerated and shown harmless), and **minimality** (the lemma claims nothing the function does not do). The frame obligation is the load-bearing one: it is the clause every §9 proof silently relies on. Minimality is the lightest — less a separate fact about the spec than a check that the lemma's statement is no stronger than its own trigger/effect proof; in practice its payoff is surfacing edge cases and cross-lemma dependencies (the genesis-slot case in Lemma A.3, the amount-guard entanglement in Lemma A.4), not catching over-claims, which a tightly-stated lemma precludes by construction.
+> **TL;DR.** Each §9.2 G-assumption is a factual claim about what one spec function does. This appendix promotes them to **lemmas** proved against the Gloas spec at commit `caa9c8e80`. A G-lemma proof has four obligations: **trigger** (every named precondition is checked, with the right kind of check), **effect** (the precise mutation and magnitude), **frame** (no *other* spec path produces the effect — every spec function that writes the governed field is enumerated and shown harmless), and **minimality** (the lemma claims nothing the function does not do). The frame obligation is the load-bearing one: it is the clause every §9 proof silently relies on. Minimality is the lightest — less a separate fact about the spec than a check that the lemma's statement is no stronger than its own trigger/effect proof; in practice its payoff is surfacing edge cases and cross-lemma dependencies (the genesis-slot case in Lemma A.3, the amount-guard entanglement in Lemma A.4), not catching over-claims, which a tightly-stated lemma precludes by construction.
 
 **How to read each lemma.** Every entry below is stated against two anchors, named in bold at its head:
 
