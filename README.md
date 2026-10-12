@@ -439,9 +439,9 @@ A slot under ePBS proceeds through five phases. Below we walk through the phases
 
 **Alternative: self-build.**
 
-![Phase 0 — self-build](figures/slice-phase0-self-v2.png)
+![Phase 0 — self-build](figures/slice-phase0-self-v3.png)
 
-*Figure 3b: Pre-slot self-build. No external builder is involved (Builder column dashed); the Proposer runs `prepare_execution_payload` locally and assembles the bid with `builder_index = BUILDER_INDEX_SELF_BUILD`, `value = 0`, signature `bls.G2_POINT_AT_INFINITY`. Nothing crosses the network in Phase 0; the execution payload and bid are held until Phase 1.*
+*Figure 3b: Pre-slot self-build. No external builder is involved (Builder column dashed); the Proposer runs `prepare_execution_payload` locally and assembles the bid with `builder_index = BUILDER_INDEX_SELF_BUILD`, `value = 0`, signature `bls.G2_POINT_AT_INFINITY`. Nothing crosses the network in Phase 0. The bid goes into the Phase 1 beacon block; the payload is held locally and revealed in Phase 3 in a `SignedExecutionPayloadEnvelope` signed with the proposer's own key (`verify_execution_payload_envelope_signature`).*
 
 The proposer for an upcoming slot may broadcast a `SignedProposerPreferences` message specifying its preferred `fee_recipient` (where to receive payment) and `target_gas_limit` (the desired gas-limit target; bids whose actual `gas_limit` is not compatible with this target via `is_gas_limit_target_compatible(parent_gas_limit, bid.gas_limit, target_gas_limit)` are filtered at the gossip layer). Without this broadcast, the gossip network will not forward any builder bids for that slot.
 
@@ -507,9 +507,9 @@ def submit_bid(builder, upcoming_slot, state, proposer_preferences):
 
 **Alternative: missing or invalid block.**
 
-![Phase 1 — missing block](figures/slice-phase1-missing-v2.png)
+![Phase 1 — missing block](figures/slice-phase1-missing-v3.png)
 
-*Figure 4b: Slot start, missing or invalid block. The Proposer is dashed (offline, delayed, or block rejected at every honest `on_block`); no slot-N consensus chain entry is created. Attesters fall back to the previous head (Figure 4d); the slot-N PTC does not vote at all, since `has_beacon_block_for_slot(store, slot)` is False.*
+*Figure 4b: Slot start, missing or invalid block. The Proposer is dashed (offline, block never delivered to honest nodes, or block rejected at every honest `on_block`); no slot-N consensus chain entry is created. Attesters fall back to the previous head (Figure 4d); the slot-N PTC does not vote at all, since `has_beacon_block_for_slot(store, slot)` is False.*
 
 At the beginning of the slot, the proposer collects valid bids from the gossip topic, selects one (typically the highest-value), and includes it in the beacon block:
 
@@ -544,7 +544,7 @@ def propose(validator, slot, state):
 
 **Alternative: block missing or invalid; attest for previous head.**
 
-![Phase 1b — invalid or missing block](figures/slice-phase1b-invalid-v3.png)
+![Phase 1b — invalid or missing block](figures/slice-phase1b-invalid-v4.png)
 
 *Figure 4d: Attestation fallback when the slot-N block is missing or invalid. No `Process block and update store` runs (`store.blocks[root]` is never written), but at $`T_{\mathrm{att}}`$ the attester still runs `get_head`, returns the previous head, and casts a **non-same-slot attestation** for the previous head with `data.index` set according to whether the parent declared FULL or EMPTY. This is the fallback that keeps fork-choice progressing through missed slots; the missed-slot FULL/EMPTY resolution it enables is analysed in §6 (Case 2).*
 
@@ -644,13 +644,13 @@ Fee-recipient equality, gas-limit-target compatibility, and the rule that `bid.s
 
 **Happy path: cautious threshold met, builder releases.**
 
-![Phase 2 — threshold met](figures/slice-phase2-v9.png)
+![Phase 2 — threshold met](figures/slice-phase2-v10.png)
 
 *Figure 5a: Phase 2, attestation deadline (t = 25%), trustless case. Attesters cast their votes (`data.index` set by the Phase 2 `attest` code; see annotation); the votes reach both peer attesters and the Builder. The Builder's three `Decide to release?` boxes model trustless cautious-reveal (Assumption A1a): the third evaluation crosses the ≥ 40% threshold and triggers payload construction in Phase 3. Under the non-trustless case (A1b) the decision predicate is a confirmation rule $`R`$ rather than the 40% threshold, but the figure's structure is the same.*
 
 **Alternative: cautious threshold never met; builder withholds.**
 
-![Phase 2 — threshold not met](figures/slice-phase2-no-reveal-v3.png)
+![Phase 2 — threshold not met](figures/slice-phase2-no-reveal-v4.png)
 
 *Figure 5b: Phase 2, cautious threshold never met (trustless case). All three `Decide to release?` evaluations return "not enough yet" (light shade); cumulative real attestation weight never crosses ≥ 40% (Assumption A1a). No payload is broadcast; the IOU persists and falls through to Path B (settled if the 60% quorum is later met; otherwise discarded, per Property P_withhold).*
 
@@ -681,7 +681,7 @@ def attest(validator, slot, state, store):
 
 **Happy path: builder reveals, all clients process the payload.**
 
-![Phase 3 — payload revealed](figures/slice-phase3-v9.png)
+![Phase 3 — payload revealed](figures/slice-phase3-v10.png)
 
 *Figure 6a: Phase 3, builder reveals. Two separate objects are broadcast: the **payload** (solid violet) and the **blob data** (dashed violet, propagated as `DataColumnSidecar` columns via PeerDAS), each going to both the Attesters' CL and the PTC. The cautious threshold has crossed, so the Builder broadcasts; Attesters run `Process payload and blob data` (CL: `on_execution_payload_envelope` checks `is_data_available` + invokes `verify_execution_payload_envelope`, which in turn calls the EL via `verify_and_notify_new_payload`); PTC members observe both signals and (under vote-on-receipt) broadcast the witness vote immediately. If both checks succeed, `store.payloads[root]` is populated; this is the gate consumed by Properties P_pay (Path A settlement requires the next block to declare the slot FULL on chain) and P_rev (honest reveal opens the gate that the slot-N+1 fork-choice resolves in the builder's favour, in both cases). The fork-choice mechanism that consumes this gate is described in Phase 5.*
 
@@ -833,7 +833,7 @@ def reveal_payload(builder, block, ...):
 
 *Each PTC member broadcasts a witness statement reporting whether it observed the payload and the blob data: a binary observation, never a validity judgment.*
 
-![Phase 4](figures/slice-phase4-v5.png)
+![Phase 4](figures/slice-phase4-v6.png)
 
 *Figure 7: Phase 4 (t = 75%), PTC witness-vote deadline. Each of the 512 PTC members runs `Check payload arrival` and broadcasts a vote carrying two independent signals: `payload_present` and `blob_data_available` (decision tree on the right). The vote is a binary observation, not a validity judgment (the Phase 4 `ptc_vote` code never calls the execution engine); the PTC primary path inside the slot-N+1 chain-inclusion check `should_extend_payload` (described in Phase 5) requires majority support on **both** signals.*
 
